@@ -11,13 +11,16 @@ import {
   Trash2,
   Edit,
   Printer,
-  BookOpen
+  BookOpen,
+  FileSpreadsheet
 } from 'lucide-react';
 import {
   useGetOrdersQuery,
   useLazyGetOrderByIdQuery,
   useDeleteOrderMutation,
   usePostMissingSalesToLedgerMutation,
+  useExportExcelMutation,
+  useLazyDownloadExportFileQuery,
 } from '../store/services/salesApi';
 import { useGetCompanySettingsQuery } from '../store/services/settingsApi';
 import { handleApiError, showSuccessToast, showErrorToast } from '../utils/errorHandler';
@@ -192,6 +195,49 @@ export const Orders = () => {
   const [deleteOrder] = useDeleteOrderMutation();
   const [postMissingSalesToLedger, { isLoading: isPostingToLedger }] = usePostMissingSalesToLedgerMutation();
   const [fetchOrderById] = useLazyGetOrderByIdQuery();
+  const [exportExcelMutation, { isLoading: isExportingExcel }] = useExportExcelMutation();
+  const [downloadExportFile] = useLazyDownloadExportFileQuery();
+
+  const handleExcelExport = async (order) => {
+    try {
+      const orderNumber = order?.order_number ?? order?.orderNumber;
+      if (!orderNumber) {
+        showErrorToast('Reference number not found');
+        return;
+      }
+
+      // Pass the order number as the search filter to export only this invoice
+      const response = await exportExcelMutation({ search: orderNumber }).unwrap();
+
+      if (response?.filename) {
+        const filename = response.filename;
+        const downloadResult = await downloadExportFile(filename);
+
+        if (downloadResult.error) {
+          showErrorToast('Download failed');
+          return;
+        }
+
+        const blob = downloadResult.data;
+        if (!blob) {
+          showErrorToast('Download failed: No data received');
+          return;
+        }
+
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        showSuccessToast('Excel file downloaded successfully');
+      }
+    } catch (err) {
+      handleApiError(err, 'Excel export');
+    }
+  };
 
   // Fetch orders
   const { data: ordersResponse, isLoading, error, refetch: refetchOrders } = useGetOrdersQuery(
@@ -568,6 +614,14 @@ export const Orders = () => {
                         >
                           <Printer className="h-4 w-4" />
                         </button>
+                        <button
+                          onClick={() => handleExcelExport(order)}
+                          className={`shrink-0 text-blue-600 hover:text-blue-800 p-1 ${isExportingExcel ? 'animate-pulse' : ''}`}
+                          title="Export Invoice to Excel"
+                          disabled={isExportingExcel}
+                        >
+                          <FileSpreadsheet className="h-4 w-4" />
+                        </button>
                         {canEditInvoice(order) && (
                           <button
                             onClick={() => handleEdit(order)}
@@ -679,6 +733,14 @@ export const Orders = () => {
                         >
                           <Printer className="h-5 w-5" />
                         </button>
+                        <button
+                          onClick={() => handleExcelExport(order)}
+                          className={`shrink-0 text-blue-600 hover:text-blue-800 p-2 rounded hover:bg-blue-50 transition-colors ${isExportingExcel ? 'animate-pulse' : ''}`}
+                          title="Export Invoice to Excel"
+                          disabled={isExportingExcel}
+                        >
+                          <FileSpreadsheet className="h-5 w-5" />
+                        </button>
                         {canEditInvoice(order) && (
                           <button
                             onClick={() => handleEdit(order)}
@@ -722,6 +784,14 @@ export const Orders = () => {
                   >
                     <Printer className="h-4 w-4" />
                     <span>Print</span>
+                  </button>
+                  <button
+                    onClick={() => handleExcelExport(selectedOrder)}
+                    className={`bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center space-x-2 ${isExportingExcel ? 'opacity-70 animate-pulse' : ''}`}
+                    disabled={isExportingExcel}
+                  >
+                    <FileSpreadsheet className="h-4 w-4" />
+                    <span>Excel</span>
                   </button>
                   {canDeleteInvoice(selectedOrder) && (
                     <button
@@ -1517,13 +1587,12 @@ export const Orders = () => {
       {/* Print Modal */}
       <PrintModal
         isOpen={showPrintModal}
-        onClose={() => {
-          setShowPrintModal(false);
-          setPrintOrderData(null);
-        }}
-        orderData={printOrderData}
+        onClose={() => setShowPrintModal(false)}
+        orderData={selectedOrder}
         documentTitle="Sales Invoice"
         partyLabel="Customer"
+        onExportExcel={exportExcelMutation}
+        onDownloadFile={downloadExportFile}
       />
     </div>
   );

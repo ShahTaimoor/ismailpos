@@ -20,7 +20,7 @@ const customerRepository = require('../repositories/postgres/CustomerRepository'
 const productRepository = require('../repositories/postgres/ProductRepository');
 const productVariantRepository = require('../repositories/postgres/ProductVariantRepository');
 const inventoryRepository = require('../repositories/InventoryRepository');
-
+const { query: pgQuery } = require('../config/postgres');
 const router = express.Router();
 
 // Helper functions to transform names to uppercase
@@ -465,8 +465,8 @@ router.patch('/:id/items-confirmation', [
     // Create invoice for newly confirmed items
     const newlyConfirmedIndices = Array.isArray(req.body.itemUpdates)
       ? req.body.itemUpdates
-          .filter((u) => u.confirmationStatus === 'confirmed')
-          .map((u) => u.itemIndex)
+        .filter((u) => u.confirmationStatus === 'confirmed')
+        .map((u) => u.itemIndex)
       : req.body.confirmAll === true
         ? items.map((_, i) => i)
         : [];
@@ -563,7 +563,7 @@ router.get('/:id/stock-status', auth, async (req, res) => {
             p = await productVariantRepository.findById(productId);
             if (p) productName = (p.display_name ?? p.displayName) || (p.variant_name ?? p.variantName) || 'Variant';
           }
-        } catch {}
+        } catch { }
         outOfStock.push({
           productId,
           productName,
@@ -930,12 +930,29 @@ router.post('/export/excel', [auth, requirePermission('view_sales_orders')], asy
     const salesOrders = await salesOrderRepository.findAll(filter, {
       populate: [
         { path: 'customer', select: 'businessName name firstName lastName email phone' },
-        { path: 'items.product', select: 'name' },
         { path: 'createdBy', select: 'firstName lastName email' }
       ],
       sort: { createdAt: -1 },
       lean: true
     });
+
+    // Get all unique IDs (product or variant) from all orders to fetch their names
+    const allIds = [...new Set(salesOrders.flatMap(o =>
+      Array.isArray(o.items) ? o.items.flatMap(i => [i.productId, i.product_id, i.product, i.variantId, i.variant_id]) : []
+    ))].filter(Boolean);
+
+    const productMap = {};
+    if (allIds.length > 0) {
+      // Fetch names from both products and product_variants tables
+      const [productsData, variantsData] = await Promise.all([
+        productRepository.findAll({ ids: allIds }),
+        // For variants, we use a custom query since findAll doesn't support ids filter
+        pgQuery('SELECT id, variant_name, display_name FROM product_variants WHERE id = ANY($1::uuid[])', [allIds])
+      ]);
+
+      productsData.forEach(p => { productMap[p.id || p._id] = p.name; });
+      variantsData.rows.forEach(v => { productMap[v.id] = v.display_name || v.variant_name; });
+    }
 
     // Prepare Excel data
     const excelData = salesOrders.map(order => {
@@ -944,9 +961,11 @@ router.post('/export/excel', [auth, requirePermission('view_sales_orders')], asy
         `${order.customer?.firstName || ''} ${order.customer?.lastName || ''}`.trim() ||
         'Unknown Customer';
 
-      const itemsSummary = order.items?.map(item =>
-        `${item.product?.name || 'Unknown'}: ${item.quantity} x $${item.unitPrice}`
-      ).join('; ') || 'No items';
+      const itemsSummary = order.items?.map(item => {
+        const pId = item.productId || item.product_id || item.product || item.variantId || item.variant_id;
+        const pName = item.name || item.product_name || productMap[pId] || pId || 'Unknown';
+        return `${pName}: ${item.quantity} x ${item.unitPrice}`;
+      }).join('; ') || 'No items';
 
       return {
         'SO Number': order.soNumber || '',

@@ -30,7 +30,8 @@ import {
   AlertCircle,
   EyeOff,
   Calculator,
-  MessageSquare
+  MessageSquare,
+  FileSpreadsheet
 } from 'lucide-react';
 import { showSuccessToast, showErrorToast, handleApiError } from '../utils/errorHandler';
 import { formatDate, formatCurrency } from '../utils/formatters';
@@ -1835,6 +1836,44 @@ const SalesOrders = ({ tabId }) => {
     setShowPrintModal(true);
   };
 
+  const handleExcelExport = async (order) => {
+    if (!order) return;
+    try {
+      const orderNumber = order?.so_number || order?.soNumber ||
+        order?.invoiceNumber || order?.orderNumber || order?.invoice_number;
+
+      if (!orderNumber) {
+        showErrorToast('Cannot export: Reference number not found');
+        return;
+      }
+
+      // Check if export mutation for single exists
+      const response = await exportExcelMutation({ search: orderNumber }).unwrap();
+
+      if (response?.filename) {
+        const filename = response.filename;
+        const blob = await downloadFileMutation(filename).unwrap();
+
+        if (!blob) {
+          showErrorToast('Download failed: No data received');
+          return;
+        }
+
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        showSuccessToast('Excel file downloaded successfully');
+      }
+    } catch (error) {
+      handleApiError(error, 'Excel export');
+    }
+  };
+
 
   const getStatusIcon = (status) => {
     switch (status) {
@@ -3077,6 +3116,13 @@ const SalesOrders = ({ tabId }) => {
                           >
                             <Printer className="h-4 w-4" />
                           </button>
+                          <button
+                            onClick={() => handleExcelExport(order)}
+                            className="text-green-600 hover:text-green-900"
+                            title="Export to Excel"
+                          >
+                            <FileSpreadsheet className="h-4 w-4" />
+                          </button>
                           {order.status === 'draft' && (
                             <>
                               <button
@@ -3641,6 +3687,8 @@ const SalesOrders = ({ tabId }) => {
         orderData={printOrderData}
         documentTitle="Sales Order"
         partyLabel="Customer"
+        onExportExcel={exportExcelMutation}
+        onDownloadFile={downloadFileMutation}
       />
 
       {/* Notes Panel */}

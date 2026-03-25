@@ -1,9 +1,12 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { useCompanyInfo } from '../hooks/useCompanyInfo';
 import { useGetBalanceSummaryQuery } from '../store/services/customerBalancesApi';
 import PrintDocument from './PrintDocument';
 import { PrintModal, PrintWrapper } from './print';
 import { PRINT_PAGE_STYLE } from './print/printPageStyle';
+import { FileSpreadsheet } from 'lucide-react';
+import { LoadingButton } from './LoadingSpinner';
+import { toast } from 'sonner';
 
 /**
  * DirectPrintInvoice - Triggers print dialog directly without opening the preview modal.
@@ -90,7 +93,9 @@ const InvoicePrintModal = ({
   orderData,
   documentTitle = 'Invoice',
   partyLabel = 'Customer',
-  autoPrint = false
+  autoPrint = false,
+  onExportExcel,
+  onDownloadFile,
 }) => {
   const { companyInfo: companySettings } = useCompanyInfo();
   const resolvedDocumentTitle = documentTitle || 'Invoice';
@@ -112,6 +117,80 @@ const InvoicePrintModal = ({
     balanceSummaryData?.balances?.currentBalance ??
     null;
 
+  // Mutations for Sales
+  const [isExporting, setIsExporting] = useState(false);
+
+  const handleExportExcel = async () => {
+    if (!onExportExcel || !onDownloadFile) {
+      toast.error('Export functionality not provided.');
+      return;
+    }
+    if (!orderData) return;
+
+    try {
+      setIsExporting(true);
+      const orderNumber = orderData?.order_number || orderData?.orderNumber || orderData?.so_number || orderData?.soNumber ||
+        orderData?.invoiceNumber || orderData?.invoice_number;
+
+      if (!orderNumber) {
+        toast.error('Reference number not found');
+        return;
+      }
+
+      // 1. Export the invoice to generate the file
+      const response = await onExportExcel({ search: orderNumber }).unwrap();
+
+      if (response?.filename) {
+        const filename = response.filename;
+
+        // 2. Download the generated file
+        // Note: We check if it's a lazy query (has .error) or a mutation (throws/unwraps)
+        let blob;
+        const downloadResult = await onDownloadFile(filename);
+
+        // Handle both lazy query results and mutation results
+        if (downloadResult && 'data' in downloadResult) {
+          if (downloadResult.error) throw new Error('Download failed');
+          blob = downloadResult.data;
+        } else {
+          blob = downloadResult;
+        }
+
+        if (!blob) throw new Error('No data received');
+
+        // 3. Trigger browser download
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', filename);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+        toast.success('Excel file downloaded successfully');
+      }
+    } catch (error) {
+      console.error('Excel export error:', error);
+      toast.error(error?.message || error?.data?.message || 'Export failed');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const excelButton = (
+    <LoadingButton
+      onClick={handleExportExcel}
+      isLoading={isExporting}
+      variant="secondary"
+      className="flex items-center gap-2"
+      disabled={!orderData}
+      title="Export Invoice to Excel"
+    >
+      <FileSpreadsheet className="h-4 w-4" />
+      Excel
+    </LoadingButton>
+  );
+
   return (
     <PrintModal
       isOpen={isOpen}
@@ -120,6 +199,7 @@ const InvoicePrintModal = ({
       hasData={!!orderData}
       emptyMessage="No invoice data to print."
       autoPrint={autoPrint}
+      additionalFooterActions={(onExportExcel && onDownloadFile) ? excelButton : null}
     >
       <PrintDocument
         companySettings={companySettings || {}}

@@ -275,7 +275,7 @@ export const salesApi = api.injectEndpoints({
       query: (filename) => ({
         url: `sales/download/${filename}`,
         method: 'get',
-        responseHandler: (response) => response.blob(),
+        responseType: 'blob',
       }),
       providesTags: [{ type: 'Sales', id: 'EXPORT' }],
     }),

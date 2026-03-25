@@ -25,7 +25,8 @@ const PrintModal = ({
   emptyMessage = 'No data to print.',
   hasData = true,
   autoPrint = false,
-  zIndex = 50
+  zIndex = 50,
+  additionalFooterActions = null
 }) => {
   const printRef = useRef(null);
 
@@ -44,6 +45,7 @@ const PrintModal = ({
 
   const footer = (
     <div className="flex justify-end gap-3 no-print">
+      {additionalFooterActions}
       <PrintTrigger
         onPrint={handlePrint}
         disabled={!hasData}

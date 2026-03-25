@@ -35,6 +35,9 @@ import {
   useExportPDFMutation,
   useExportJSONMutation,
   useLazyDownloadExportFileQuery,
+  useGetCCTVOrdersQuery,
+  usePostMissingSalesToLedgerMutation,
+  useSyncSalesLedgerMutation,
 } from '../store/services/salesApi';
 import { useCheckApplicableDiscountsMutation } from '../store/services/discountsApi';
 import { useGetBanksQuery } from '../store/services/banksApi';
@@ -3502,8 +3505,10 @@ export const Sales = ({ tabId, editData }) => {
           setCurrentOrder(null);
         }}
         orderData={currentOrder}
-        documentTitle="Sales Invoice"
+        documentTitle="Sale Invoice"
         partyLabel="Customer"
+        onExportExcel={exportExcel}
+        onDownloadFile={downloadFile}
       />
 
       {/* Export Format Selection Modal */}

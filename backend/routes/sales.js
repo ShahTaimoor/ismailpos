@@ -15,7 +15,7 @@ const productVariantRepository = require('../repositories/ProductVariantReposito
 const customerRepository = require('../repositories/CustomerRepository');
 const cashReceiptRepository = require('../repositories/postgres/CashReceiptRepository');
 const bankReceiptRepository = require('../repositories/postgres/BankReceiptRepository');
-
+const { query: pgQuery } = require('../config/postgres');
 /** Check if order can be cancelled (works with plain order object from repo). */
 function canBeCancelled(order) {
   const status = order?.status;
@@ -355,7 +355,7 @@ router.post('/', [
     }
 
     const { customer, items, orderType, payment, notes, isTaxExempt, billDate, appliedDiscounts, discountAmount, subtotal, total, tax, invoiceNumber } = req.body;
- 
+
     // Use SalesService to create the sale (invoice); appliedDiscounts/discountAmount from POS discount codes
     const savedOrder = await salesService.createSale(
       {
@@ -940,7 +940,7 @@ router.put('/:id', [
     let finalOrder = updatedOrder || order;
     try {
       finalOrder = await salesService.getSalesOrderById(finalOrder.id || finalOrder._id);
-    } catch(e) {
+    } catch (e) {
       console.error('Failed to get fully enriched order on update:', e);
     }
 
@@ -1201,6 +1201,24 @@ router.post('/export/excel', [auth, requirePermission('view_orders')], async (re
 
     const orders = await salesRepository.findAll(filter, { limit: 10000, sort: 'created_at DESC' });
 
+    // Get all unique IDs (product or variant) from all orders to fetch their names
+    const allIds = [...new Set(orders.flatMap(o =>
+      Array.isArray(o.items) ? o.items.flatMap(i => [i.productId, i.product_id, i.product, i.variantId, i.variant_id]) : []
+    ))].filter(Boolean);
+
+    const productMap = {};
+    if (allIds.length > 0) {
+      // Fetch names from both products and product_variants tables
+      const [productsData, variantsData] = await Promise.all([
+        productRepository.findAll({ ids: allIds }),
+        // For variants, we use a direct query since findAll may not support ids filter well
+        pgQuery('SELECT id, variant_name, display_name FROM product_variants WHERE id = ANY($1::uuid[])', [allIds])
+      ]);
+
+      productsData.forEach(p => { productMap[p.id || p._id] = p.name; });
+      variantsData.rows.forEach(v => { productMap[v.id] = v.display_name || v.variant_name; });
+    }
+
     const excelData = await Promise.all(orders.map(async (order) => {
       let customerName = 'Walk-in Customer';
       let customerEmail = '';
@@ -1214,7 +1232,12 @@ router.post('/export/excel', [auth, requirePermission('view_orders')], async (re
         }
       }
       const itemsArr = Array.isArray(order.items) ? order.items : [];
-      const itemsSummary = itemsArr.map(item => `${item.product_id || item.product || 'Unknown'}: ${item.quantity || 0} x $${item.unitPrice || item.unit_price || 0}`).join('; ') || 'No items';
+      const itemsSummary = itemsArr.map(item => {
+        const pId = item.productId || item.product_id || item.product || item.variantId || item.variant_id;
+        const pName = item.name || item.product_name || productMap[pId] || pId || 'Unknown';
+        return `${pName}: ${item.quantity || 0} x ${item.unitPrice || item.unit_price || 0}`;
+      }).join('; ') || 'No items';
+
       return {
         'P/I No.:': order.order_number || '',
         'Customer': customerName,
