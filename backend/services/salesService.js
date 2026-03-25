@@ -531,7 +531,7 @@ class SalesService {
     }
 
     // Generate order number if not provided (sales/invoices use INV-, not SO- which is for sales orders only)
-    const orderNumber = data.orderNumber || `INV-${Date.now()}`;
+    const orderNumber = data.orderNumber || `KDPI${Date.now()}`;
 
     // Prepare sale data for PostgreSQL (include applied discount codes when provided from POS)
     const amountPaidAtCreate = parseFloat(payment?.amount ?? 0) || 0;
@@ -686,7 +686,7 @@ class SalesService {
       isTaxExempt: salesOrder.is_tax_exempt ?? salesOrder.isTaxExempt ?? false,
       billDate: salesOrder.order_date || salesOrder.orderDate || new Date(),
       salesOrderId: salesOrder.id || salesOrder._id,
-      orderNumber: `INV-${(salesOrder.so_number || salesOrder.soNumber || salesOrder.id || '').toString().replace(/^SO-/, '')}`
+      orderNumber: `KDPI${(salesOrder.so_number || salesOrder.soNumber || salesOrder.id || '').toString().replace(/^SO-/, '')}`
     };
     return await this.createSale(saleData, user, { skipInventoryUpdate: true });
   }
@@ -720,7 +720,7 @@ class SalesService {
       isTaxExempt: salesOrder.is_tax_exempt ?? salesOrder.isTaxExempt ?? false,
       billDate: salesOrder.order_date || salesOrder.orderDate || new Date(),
       salesOrderId: salesOrder.id || salesOrder._id,
-      orderNumber: `INV-${soRef}-${Date.now().toString(36)}`
+      orderNumber: `KDPI${soRef}-${Date.now().toString(36)}`
     };
     return await this.createSale(saleData, user, { skipInventoryUpdate: true });
   }

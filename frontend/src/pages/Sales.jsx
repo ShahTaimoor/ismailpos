@@ -843,20 +843,16 @@ export const Sales = ({ tabId, editData }) => {
     if (!customer) return '';
 
     const now = new Date();
-    const year = now.getFullYear();
+    const year = String(now.getFullYear()).substring(2); // '24' for 2024
     const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const time = String(now.getTime()).slice(-4); // Last 4 digits of timestamp
+    const timeSuffix = String(now.getTime()).slice(-3); // 3-digit suffix for sequence simulation
+    
+    // Business code: Initial + 3 digits from customer name hash or ID
+    const nameStr = customer.businessName ?? customer.business_name ?? customer.name ?? 'CUST';
+    const initials = String(nameStr).substring(0, 1).toUpperCase();
+    const customerCode = `${initials}${String(now.getTime()).slice(-4, -1)}`;
 
-    // Format: CUSTOMER-INITIALS-YYYYMMDD-XXXX (displayName may be missing from API; use businessName/name fallback)
-    const nameStr = customer.displayName ?? customer.businessName ?? customer.name ?? 'CUST';
-    const customerInitials = String(nameStr)
-      .split(' ')
-      .map(word => word.charAt(0).toUpperCase())
-      .join('')
-      .substring(0, 3) || 'CUS';
-
-    return `INV-${customerInitials}-${year}${month}${day}-${time}`;
+    return `KDPI${year}${month}${timeSuffix} (${customerCode} )`;
   };
 
   // Handle edit data when component is opened for editing

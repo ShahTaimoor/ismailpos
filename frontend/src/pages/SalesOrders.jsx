@@ -2660,7 +2660,7 @@ const SalesOrders = ({ tabId }) => {
               <div className="flex flex-col w-full sm:w-72">
                 <div className="flex items-center gap-3 mb-1 flex-wrap">
                   <label className="block text-xs font-medium text-gray-700 m-0">
-                    Invoice Number
+                    P/I No.:
                   </label>
                   <label
                     htmlFor="soAutoGenerateInvoice"
@@ -2690,7 +2690,7 @@ const SalesOrders = ({ tabId }) => {
                     value={formData.orderNumber}
                     onChange={(e) => setFormData((prev) => ({ ...prev, orderNumber: e.target.value }))}
                     className="w-full input pr-16 h-8 text-sm"
-                    placeholder={autoGenerateOrderNumber ? 'Auto-generated' : 'Enter invoice number'}
+                    placeholder={autoGenerateOrderNumber ? 'Auto-generated' : 'Enter P/I number'}
                     disabled={autoGenerateOrderNumber}
                   />
                   {autoGenerateOrderNumber && (

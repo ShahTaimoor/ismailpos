@@ -340,7 +340,7 @@ const PrintDocument = ({
     ].filter(Boolean);
 
     const invoiceDetailLines = [
-        showPrintInvoiceNumber ? { label: 'Invoice #:', value: formatText(documentNumber) } : null,
+        showPrintInvoiceNumber ? { label: 'P/I No.:', value: formatText(documentNumber) } : null,
         (showPrintInvoiceDate && showDate) ? { label: 'Date:', value: formatDate(invoiceDate) } : null,
         showPrintInvoiceStatus ? { label: 'Status:', value: formatText(documentStatus) } : null,
         showPrintInvoiceType ? { label: 'Type:', value: formatText(documentType) } : null
@@ -484,7 +484,7 @@ const PrintDocument = ({
                         Address: {partyInfo.address}
                     </div>
                     <div className="col-span-4 p-2 border-r border-b border-black font-medium text-right italic">
-                        Invoice No: {documentNumber}
+                        P/I No.: {documentNumber}
                     </div>
                 </div>
 

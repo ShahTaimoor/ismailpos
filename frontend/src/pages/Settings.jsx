@@ -125,7 +125,7 @@ export const Settings2 = () => {
   });
 
   const sampleOrderData = useMemo(() => ({
-    invoiceNumber: 'INV-PREVIEW',
+    invoiceNumber: 'KDPI2403001 (S001 )',
     createdAt: new Date(),
     customer: {
       name: 'Walk-in Customer',

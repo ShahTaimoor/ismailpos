@@ -319,7 +319,7 @@ const CCTVAccess = ({ tabId }) => {
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider min-w-[140px]">
-                      Invoice #
+                      P/I No.:
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider min-w-[120px]">
                       Customer
@@ -484,7 +484,7 @@ const CCTVAccess = ({ tabId }) => {
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="p-6">
               <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-bold text-gray-900">Invoice Details</h2>
+                <h2 className="text-2xl font-bold text-gray-900">P/I Details</h2>
                 <button
                   onClick={() => {
                     setShowDetails(false);
@@ -499,7 +499,7 @@ const CCTVAccess = ({ tabId }) => {
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="text-sm font-medium text-gray-700">Invoice Number</label>
+                    <label className="text-sm font-medium text-gray-700">P/I No.:</label>
                     <p className="text-gray-900 font-semibold">{selectedOrder.orderNumber}</p>
                   </div>
                   <div>
@@ -556,7 +556,7 @@ const CCTVAccess = ({ tabId }) => {
                 <div className="border-t pt-4 mt-4">
                   <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
                     <Camera className="h-5 w-5 text-blue-600" />
-                    CCTV Timestamps
+                    P/I Details (CCTV)
                   </h3>
                   <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-3">
                     <div className="flex items-center justify-between">

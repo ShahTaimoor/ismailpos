@@ -107,7 +107,7 @@ const OrderCard = ({ order, onView, onEdit, onPrint }) => {
         <div className="flex items-start justify-between">
           <div className="flex-1">
             <h3 className="text-lg font-medium text-gray-900">
-              Order #{order.order_number ?? order.orderNumber ?? '—'}
+              P/I No.: {order.order_number ?? order.orderNumber ?? '—'}
             </h3>
             <p className="text-sm text-gray-600">
               {order.customer?.business_name ?? order.customer?.businessName ?? order.customer?.name ?? order.customerInfo?.businessName ?? order.customerInfo?.business_name ?? order.customerInfo?.name ?? 'Walk-in Customer'}
@@ -450,7 +450,7 @@ export const Orders = () => {
           <div className="hidden lg:block bg-gray-50 border-b border-gray-200">
             <div className="px-4 xl:px-6 py-3">
               <div className="grid grid-cols-12 gap-3 xl:gap-4 text-xs font-medium text-gray-500 uppercase tracking-wider">
-                <div className="col-span-1">Order #</div>
+                <div className="col-span-1">P/I No.</div>
                 <div className="col-span-3">Customer</div>
                 <div className="col-span-1">Date</div>
                 <div className="col-span-1">Items</div>
@@ -478,7 +478,7 @@ export const Orders = () => {
                     {/* Order Number */}
                     <div className="col-span-1 min-w-0">
                       <div className="font-medium text-gray-900 truncate text-sm">
-                        #{order.order_number ?? order.orderNumber ?? '—'}
+                        P/I No.: {order.order_number ?? order.orderNumber ?? '—'}
                       </div>
                     </div>
 
@@ -598,7 +598,7 @@ export const Orders = () => {
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
                         <h3 className="text-base font-semibold text-gray-900 truncate">
-                          #{order.order_number ?? order.orderNumber ?? '—'}
+                          P/I No.: {order.order_number ?? order.orderNumber ?? '—'}
                         </h3>
                         <p className="text-sm text-gray-600 mt-1 truncate">
                           {order.customer?.businessName ?? order.customer?.business_name ?? order.customer?.displayName ?? order.customer?.name ?? order.customerInfo?.businessName ?? order.customerInfo?.business_name ?? order.customerInfo?.name ?? 'Walk-in Customer'}
@@ -784,7 +784,7 @@ export const Orders = () => {
                 <div className="text-right">
                   <h3 className="font-semibold text-gray-900 border-b border-gray-300 pb-2 mb-4">Invoice Details:</h3>
                   <div className="space-y-1">
-                    <p><span className="font-medium">Invoice #:</span> {selectedOrder.order_number ?? selectedOrder.orderNumber ?? '—'}</p>
+                    <p><span className="font-medium">P/I No.:</span> {selectedOrder.order_number ?? selectedOrder.orderNumber ?? '—'}</p>
                     <p><span className="font-medium">Date:</span> {formatOrderDate(selectedOrder)}</p>
                     {(selectedOrder.sale_date ?? selectedOrder.billDate) && (selectedOrder.created_at ?? selectedOrder.createdAt) && new Date(selectedOrder.sale_date ?? selectedOrder.billDate).getTime() !== new Date(selectedOrder.created_at ?? selectedOrder.createdAt).getTime() && (
                       <p className="text-xs text-gray-500">(Original: {formatOrderDate({ created_at: selectedOrder.created_at, createdAt: selectedOrder.createdAt })})</p>

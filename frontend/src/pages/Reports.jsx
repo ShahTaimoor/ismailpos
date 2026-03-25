@@ -211,7 +211,7 @@ export const Reports = () => {
         }
         if (salesGroupBy === 'invoice') {
           return [
-            { header: 'Invoice #', key: 'invoiceNo' },
+            { header: 'P/I No.:', key: 'invoiceNo' },
             { header: 'Date', render: (row) => new Date(row.date).toLocaleDateString() },
             { header: 'Customer', render: (row) => row.customerName || row.name || 'N/A' },
             { header: 'Total', render: (row) => (row.total || 0).toLocaleString(), align: 'right', bold: true },

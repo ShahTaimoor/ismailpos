@@ -464,7 +464,7 @@ export const Dashboard = () => {
   ];
 
   const salesInvoicesColumns = [
-    { key: 'order_number', label: 'Order Number', sortable: true, render: (val, row) => val || row.orderNumber || row.invoiceNo || '-' },
+    { key: 'order_number', label: 'P/I No.:', sortable: true, render: (val, row) => val || row.orderNumber || row.invoiceNo || '-' },
     { key: 'customer', label: 'Customer', sortable: true, render: (val, row) => row.customer?.businessName || row.customer?.business_name || row.customerInfo?.businessName || row.customerInfo?.business_name || row.customerName || row.customer?.name || row.customerInfo?.name || '-' },
     { key: 'sale_date', label: 'Date', sortable: true, format: 'date', render: (val, row) => formatDate(val || row.createdAt || row.orderDate || row.date) },
     { key: 'status', label: 'Status', sortable: true },

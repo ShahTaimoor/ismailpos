@@ -354,8 +354,8 @@ router.post('/', [
       });
     }
 
-    const { customer, items, orderType, payment, notes, isTaxExempt, billDate, appliedDiscounts, discountAmount, subtotal, total, tax } = req.body;
-
+    const { customer, items, orderType, payment, notes, isTaxExempt, billDate, appliedDiscounts, discountAmount, subtotal, total, tax, invoiceNumber } = req.body;
+ 
     // Use SalesService to create the sale (invoice); appliedDiscounts/discountAmount from POS discount codes
     const savedOrder = await salesService.createSale(
       {
@@ -371,7 +371,8 @@ router.post('/', [
         discountAmount,
         subtotal,
         total,
-        tax
+        tax,
+        orderNumber: invoiceNumber
       },
       req.user
     );
@@ -1215,7 +1216,7 @@ router.post('/export/excel', [auth, requirePermission('view_orders')], async (re
       const itemsArr = Array.isArray(order.items) ? order.items : [];
       const itemsSummary = itemsArr.map(item => `${item.product_id || item.product || 'Unknown'}: ${item.quantity || 0} x $${item.unitPrice || item.unit_price || 0}`).join('; ') || 'No items';
       return {
-        'Order Number': order.order_number || '',
+        'P/I No.:': order.order_number || '',
         'Customer': customerName,
         'Customer Email': customerEmail,
         'Customer Phone': customerPhone,
@@ -1223,7 +1224,7 @@ router.post('/export/excel', [auth, requirePermission('view_orders')], async (re
         'Status': order.status || '',
         'Payment Status': order.payment_status || '',
         'Payment Method': order.payment_method || '',
-        'Order Date': order.sale_date || order.created_at ? new Date(order.sale_date || order.created_at).toISOString().split('T')[0] : '',
+        'P/I Date': order.sale_date || order.created_at ? new Date(order.sale_date || order.created_at).toISOString().split('T')[0] : '',
         'Subtotal': order.subtotal ?? 0,
         'Discount': order.discount ?? 0,
         'Tax': order.tax ?? 0,
@@ -1269,7 +1270,7 @@ router.post('/export/excel', [auth, requirePermission('view_orders')], async (re
     ];
     worksheet['!cols'] = columnWidths;
 
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Sales Orders');
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Invoices');
 
     // Ensure exports directory exists
     const exportsDir = path.join(__dirname, '../exports');
@@ -1340,7 +1341,7 @@ router.post('/export/csv', [auth, requirePermission('view_orders')], async (req,
       const itemsArr = Array.isArray(order.items) ? order.items : [];
       const itemsSummary = itemsArr.map(item => `${item.product_id || item.product || 'Unknown'}: ${item.quantity || 0} x $${item.unitPrice || item.unit_price || 0}`).join('; ') || 'No items';
       return {
-        'Order Number': order.order_number || '',
+        'P/I No.:': order.order_number || '',
         'Customer': customerName,
         'Customer Email': customerEmail,
         'Customer Phone': customerPhone,
@@ -1348,7 +1349,7 @@ router.post('/export/csv', [auth, requirePermission('view_orders')], async (req,
         'Status': order.status || '',
         'Payment Status': order.payment_status || '',
         'Payment Method': order.payment_method || '',
-        'Order Date': order.sale_date || order.created_at ? new Date(order.sale_date || order.created_at).toISOString().split('T')[0] : '',
+        'P/I Date': order.sale_date || order.created_at ? new Date(order.sale_date || order.created_at).toISOString().split('T')[0] : '',
         'Subtotal': order.subtotal ?? 0,
         'Discount': order.discount ?? 0,
         'Tax': order.tax ?? 0,
@@ -1367,7 +1368,7 @@ router.post('/export/csv', [auth, requirePermission('view_orders')], async (req,
     // Create CSV workbook
     const workbook = XLSX.utils.book_new();
     const worksheet = XLSX.utils.json_to_sheet(csvData);
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Sales Orders');
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Invoices');
 
     // Ensure exports directory exists
     const exportsDir = path.join(__dirname, '../exports');
@@ -1654,7 +1655,7 @@ router.post('/export/pdf', [auth, requirePermission('view_orders')], async (req,
     let rightY = startY;
 
     // Left column - Order Summary
-    doc.fontSize(10).font('Helvetica-Bold').text('Order Summary:', leftColumnX, leftY);
+    doc.fontSize(10).font('Helvetica-Bold').text('P/I Summary:', leftColumnX, leftY);
     // Draw separator line under header
     doc.moveTo(leftColumnX, leftY + headerLineYOffset).lineTo(leftColumnX + columnWidth, leftY + headerLineYOffset).stroke({ color: '#cccccc', width: 0.5 });
     leftY += lineHeight + 3;
@@ -1755,7 +1756,7 @@ router.post('/export/pdf', [auth, requirePermission('view_orders')], async (req,
     xPos += colWidths.sno;
     doc.text('Date', xPos, tableTop);
     xPos += colWidths.date;
-    doc.text('Order #', xPos, tableTop);
+    doc.text('P/I No.:', xPos, tableTop);
     xPos += colWidths.orderNumber;
     if (showCustomerColumn) {
       doc.text('Customer', xPos, tableTop);
@@ -1799,7 +1800,7 @@ router.post('/export/pdf', [auth, requirePermission('view_orders')], async (req,
         xPos += colWidths.sno;
         doc.text('Date', xPos, currentY);
         xPos += colWidths.date;
-        doc.text('Order #', xPos, currentY);
+        doc.text('P/I No.:', xPos, currentY);
         xPos += colWidths.orderNumber;
         if (showCustomerColumn) {
           doc.text('Customer', xPos, currentY);
