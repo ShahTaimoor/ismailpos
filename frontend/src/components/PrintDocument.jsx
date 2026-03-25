@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { formatQuantityDisplay } from '../utils/dualUnitUtils';
+import { OptimizedImage } from './OptimizedImage';
 
 const PrintDocument = ({
     companySettings,
@@ -378,7 +379,7 @@ const PrintDocument = ({
                     {/* Company Header */}
                     <div className="receipt-voucher__header text-center mb-6">
                         {showLogo && safeCompanySettings.logo && (
-                            <img src={safeCompanySettings.logo} alt="Logo" className="receipt-voucher__logo max-h-16 mx-auto mb-2" />
+                            <OptimizedImage src={safeCompanySettings.logo} alt="Logo" className="receipt-voucher__logo max-h-16 mx-auto mb-2" />
                         )}
                         <h1 className="receipt-voucher__company-name font-bold text-xl">{resolvedCompanyName}</h1>
                         {resolvedCompanyAddress && <p className="receipt-voucher__company-address text-sm text-gray-600">{resolvedCompanyAddress}</p>}
@@ -449,7 +450,7 @@ const PrintDocument = ({
                     <div className="grid grid-cols-12 gap-4 items-center mb-2">
                         <div className="col-span-2">
                             {showLogo && safeCompanySettings.logo && (
-                                <img
+                                <OptimizedImage
                                     src={safeCompanySettings.logo}
                                     alt="Logo"
                                     className="max-h-20 w-auto object-contain"
@@ -514,7 +515,7 @@ const PrintDocument = ({
                                     <td className="border border-black p-1 uppercase">
                                         <div className="flex items-center gap-2">
                                             {(printSettings?.showProductImages !== false && (item.product?.imageUrl || item.imageUrl || item.product?.image || item.image)) && (
-                                                <img 
+                                                <OptimizedImage 
                                                     src={item.product?.imageUrl || item.imageUrl || item.product?.image || item.image} 
                                                     alt="" 
                                                     className="w-8 h-8 object-cover rounded border border-gray-200" 
@@ -601,7 +602,7 @@ const PrintDocument = ({
                 {showLogo && (
                     <div className="print-document__logo-wrap">
                         {safeCompanySettings.logo ? (
-                            <img
+                            <OptimizedImage
                                 src={safeCompanySettings.logo}
                                 alt="Company Logo"
                                 className="print-document__logo-img"
@@ -733,7 +734,7 @@ const PrintDocument = ({
                                 <td>
                                     <div className="flex items-center gap-2">
                                         {(printSettings?.showProductImages !== false && (item.product?.imageUrl || item.imageUrl || item.product?.image || item.image)) && (
-                                            <img 
+                                            <OptimizedImage 
                                                 src={item.product?.imageUrl || item.imageUrl || item.product?.image || item.image} 
                                                 alt="" 
                                                 className="w-8 h-8 object-cover rounded border border-gray-200" 

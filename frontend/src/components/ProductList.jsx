@@ -3,6 +3,8 @@ import { Package, Edit, Trash2, Barcode, TrendingUp } from 'lucide-react';
 import { Checkbox } from './Checkbox';
 import { isLowStock, getExpiryStatus } from '../utils/productHelpers';
 
+import { OptimizedImage } from './OptimizedImage';
+
 export const ProductList = ({
   products,
   searchTerm,
@@ -102,7 +104,7 @@ export const ProductList = ({
                     <div className="flex items-center space-x-1.5 xl:space-x-2 2xl:space-x-3">
                       {showImages ? (
                         product.imageUrl ? (
-                          <img 
+                          <OptimizedImage 
                             src={product.imageUrl} 
                             alt={product.name} 
                             className="h-6 w-6 xl:h-8 xl:w-8 2xl:h-10 2xl:w-10 object-cover rounded-md flex-shrink-0 border border-gray-200" 
@@ -225,7 +227,7 @@ export const ProductList = ({
                     <div className="flex items-start space-x-2 xl:space-x-3">
                       {showImages ? (
                         product.imageUrl ? (
-                          <img 
+                          <OptimizedImage 
                             src={product.imageUrl} 
                             alt={product.name} 
                             className="h-8 w-8 xl:h-10 xl:w-10 object-cover rounded-md flex-shrink-0 border border-gray-200 mt-0.5" 

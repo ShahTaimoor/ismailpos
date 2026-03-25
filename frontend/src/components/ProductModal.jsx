@@ -4,6 +4,7 @@ import { Camera, Image as ImageIcon, X } from 'lucide-react';
 import { LoadingButton } from './LoadingSpinner';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
+import { OptimizedImage } from './OptimizedImage';
 
 export const ProductModal = ({ product, isOpen, onClose, onSave, isSubmitting, allProducts = [], onEditExisting, categories = [] }) => {
   const showImages = localStorage.getItem('showProductImagesUI') !== 'false';
@@ -305,7 +306,7 @@ export const ProductModal = ({ product, isOpen, onClose, onSave, isSubmitting, a
                       <div className="relative border-2 border-dashed border-gray-300 rounded-md bg-gray-50 flex items-center justify-center overflow-hidden h-[120px] xl:h-[150px] group">
                         {formData.imageUrl ? (
                           <>
-                            <img src={formData.imageUrl} alt="Product" className="object-cover w-full h-full" />
+                            <OptimizedImage src={formData.imageUrl} alt="Product" className="object-cover w-full h-full" />
                             <button
                               type="button"
                               onClick={() => setFormData(prev => ({ ...prev, imageUrl: '' }))}

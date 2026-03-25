@@ -4,7 +4,8 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Package } from 'lucide-react';
+import { Package, Search } from 'lucide-react';
+import { useImagePreview } from './ImagePreviewProvider';
 
 /**
  * OptimizedImage - Image component with lazy loading, WebP support, and responsive images
@@ -16,6 +17,7 @@ import { Package } from 'lucide-react';
  * @param {boolean} lazy - Enable lazy loading (default: true)
  * @param {string} fallback - Fallback image URL
  * @param {Object} style - Inline styles
+ * @param {boolean} preview - Enable click to preview (default: true)
  */
 export const OptimizedImage = ({
   src,
@@ -26,11 +28,13 @@ export const OptimizedImage = ({
   lazy = true,
   fallback = null,
   style = {},
+  preview = true,
   ...props
 }) => {
   const [isLoaded, setIsLoaded] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [isInView, setIsInView] = useState(!lazy);
+  const { openPreview } = useImagePreview();
   const imgRef = useRef(null);
 
   // Intersection Observer for lazy loading
@@ -132,33 +136,46 @@ export const OptimizedImage = ({
   const sizesAttr = srcset ? getSizes() : undefined;
 
   return (
-    <picture ref={imgRef} className={className} style={style}>
-      {/* WebP source with srcset for responsive images */}
-      {webpSrc && srcset && (
-        <source
-          srcSet={srcset}
-          sizes={sizesAttr}
-          type="image/webp"
-        />
-      )}
-      
-      {/* WebP source (single image) */}
-      {webpSrc && !srcset && (
-        <source srcSet={webpSrc} type="image/webp" />
-      )}
+    <div 
+      className={`relative group ${preview ? 'cursor-zoom-in' : ''} ${className}`} 
+      style={style}
+      onClick={preview ? () => openPreview(src, alt) : undefined}
+    >
+      <picture ref={imgRef}>
+        {/* WebP source with srcset for responsive images */}
+        {webpSrc && srcset && (
+          <source
+            srcSet={srcset}
+            sizes={sizesAttr}
+            type="image/webp"
+          />
+        )}
+        
+        {/* WebP source (single image) */}
+        {webpSrc && !srcset && (
+          <source srcSet={webpSrc} type="image/webp" />
+        )}
 
-      {/* Fallback image (JPEG/PNG) */}
-      <img
-        src={src}
-        alt={alt}
-        className={`${className} ${!isLoaded ? 'opacity-0' : 'opacity-100 transition-opacity duration-300'}`}
-        onLoad={handleLoad}
-        onError={handleError}
-        loading={lazy ? 'lazy' : 'eager'}
-        decoding="async"
-        {...props}
-      />
-    </picture>
+        {/* Fallback image (JPEG/PNG) */}
+        <img
+          src={src}
+          alt={alt}
+          className={`w-full h-full object-cover ${!isLoaded ? 'opacity-0' : 'opacity-100 transition-opacity duration-300'}`}
+          onLoad={handleLoad}
+          onError={handleError}
+          loading={lazy ? 'lazy' : 'eager'}
+          decoding="async"
+          {...props}
+        />
+      </picture>
+      
+      {/* Preview Hover Overlay */}
+      {preview && isLoaded && (
+        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center pointer-events-none rounded-md">
+          <Search className="text-white opacity-0 group-hover:opacity-100 transition-opacity h-5 w-5 drop-shadow-md" />
+        </div>
+      )}
+    </div>
   );
 };
 
