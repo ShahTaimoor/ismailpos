@@ -85,6 +85,8 @@ const safeRender = (value) => {
   return String(value);
 };
 
+const isManualItemId = (id) => typeof id === 'string' && id.startsWith('manual:');
+
 // Format customer address for display (avoids showing raw JSON)
 const formatAddressForDisplay = (customer) => {
   if (!customer) return '';
@@ -200,10 +202,13 @@ const SalesOrders = ({ tabId }) => {
   const [productSearchTerm, setProductSearchTerm] = useState('');
   const [quantity, setQuantity] = useState(1);
   const [customRate, setCustomRate] = useState('');
+  const [customCost, setCustomCost] = useState('');
+  const [customStock, setCustomStock] = useState('');
   const [calculatedRate, setCalculatedRate] = useState(0);
   const [isAddingProduct, setIsAddingProduct] = useState(false);
   const [selectedProductIndex, setSelectedProductIndex] = useState(-1);
   const [searchKey, setSearchKey] = useState(0); // Key to force re-render
+  const isManualEntryMode = !selectedProduct && productSearchTerm.trim().length > 0;
 
   // Last prices state
   const [isLoadingLastPrices, setIsLoadingLastPrices] = useState(false);
@@ -631,6 +636,8 @@ const SalesOrders = ({ tabId }) => {
     const calculatedPrice = calculatePrice(product, priceType);
     setCalculatedRate(calculatedPrice);
     setCustomRate(calculatedPrice.toString());
+    setCustomCost((product?.pricing?.cost ?? '').toString());
+    setCustomStock('');
   };
 
   // Update rate when price type changes
@@ -658,13 +665,33 @@ const SalesOrders = ({ tabId }) => {
       setSelectedProduct(null);
       setCustomRate('');
       setIsAddingProduct(false);
+      setCustomCost('');
+      setCustomStock('');
     }
 
     if (searchTerm === '') {
       setSelectedProduct(null);
       setCustomRate('');
       setIsAddingProduct(false);
+      setCustomCost('');
+      setCustomStock('');
+    } else if (!selectedProduct) {
+      setIsAddingProduct(true);
     }
+  };
+
+  const buildManualItem = () => {
+    const manualName = (productSearchTerm || '').trim();
+    if (!manualName) return null;
+    const normalized = manualName.toLowerCase().replace(/\s+/g, '-');
+    return {
+      _id: `manual:${normalized}`,
+      id: `manual:${normalized}`,
+      name: manualName,
+      isCustom: true,
+      inventory: { currentStock: Number(customStock) || 0, reorderPoint: 0 },
+      pricing: { retail: Number(customRate) || 0, wholesale: Number(customRate) || 0, cost: Number(customCost) || 0 }
+    };
   };
 
   const handleModalProductSearch = (searchTerm) => {
@@ -751,18 +778,24 @@ const SalesOrders = ({ tabId }) => {
   }, [priceType]);
 
   const handleAddItem = async () => {
-    if (!selectedProduct) return;
+    const manualProduct = !selectedProduct ? buildManualItem() : null;
+    const productToAdd = selectedProduct || manualProduct;
+    if (!productToAdd) return;
 
     // Validate that rate is filled
     if (!customRate || parseFloat(customRate) <= 0) {
       showErrorToast('Please enter a valid rate');
       return;
     }
+    if (productToAdd.isCustom && (Number(customStock) <= 0 || Number.isNaN(Number(customStock)))) {
+      showErrorToast('Please enter custom stock greater than 0');
+      return;
+    }
 
     // Get display name for error messages
-    const displayName = selectedProduct.isVariant
-      ? (selectedProduct.displayName || selectedProduct.variantName || selectedProduct.name)
-      : selectedProduct.name;
+    const displayName = productToAdd.isVariant
+      ? (productToAdd.displayName || productToAdd.variantName || productToAdd.name)
+      : productToAdd.name;
 
     // Allow adding products even when out of stock (user will be warned on confirm)
     setIsAddingToCart(true);
@@ -771,11 +804,12 @@ const SalesOrders = ({ tabId }) => {
       const unitPrice = parseFloat(customRate) || calculatedRate;
 
       // Check if sale price is less than cost price (always check, regardless of showCostPrice)
-      if (lastPurchasePrice !== null && unitPrice < lastPurchasePrice) {
-        const loss = lastPurchasePrice - unitPrice;
-        const lossPercent = ((loss / lastPurchasePrice) * 100).toFixed(1);
+      const effectiveCost = productToAdd.isCustom ? (Number(customCost) || 0) : lastPurchasePrice;
+      if (effectiveCost !== null && effectiveCost !== undefined && unitPrice < effectiveCost) {
+        const loss = effectiveCost - unitPrice;
+        const lossPercent = ((loss / effectiveCost) * 100).toFixed(1);
         const shouldProceed = window.confirm(
-          `⚠️ WARNING: Sale price (${unitPrice}) is below cost price (${Math.round(lastPurchasePrice)}).\n\n` +
+          `⚠️ WARNING: Sale price (${unitPrice}) is below cost price (${Math.round(effectiveCost)}).\n\n` +
           `Loss per unit: ${Math.round(loss)} (${lossPercent}%)\n` +
           `Total loss: ${Math.round(loss * quantity)}\n\n` +
           `Do you want to proceed?`
@@ -788,21 +822,21 @@ const SalesOrders = ({ tabId }) => {
       const subtotal = unitPrice * quantity;
       const discountAmount = 0; // Can be enhanced later
       // For variants, use base product's tax settings if available, otherwise default to 0
-      const taxRate = selectedProduct.isVariant
-        ? (selectedProduct.baseProduct?.taxSettings?.taxRate || 0)
-        : (selectedProduct.taxSettings?.taxRate || 0);
+      const taxRate = productToAdd.isVariant
+        ? (productToAdd.baseProduct?.taxSettings?.taxRate || 0)
+        : (productToAdd.taxSettings?.taxRate || 0);
       const taxAmount = formData.isTaxExempt ? 0 : (subtotal * taxRate / 100);
       const total = subtotal - discountAmount + taxAmount;
 
       // Store last purchase price for this product/variant
-      if (lastPurchasePrice !== null) {
+      if (!productToAdd.isCustom && lastPurchasePrice !== null) {
         setLastPurchasePrices(prev => ({
           ...prev,
-          [selectedProduct._id]: lastPurchasePrice
+          [productToAdd._id]: lastPurchasePrice
         }));
       }
 
-      const productId = selectedProduct._id;
+      const productId = productToAdd._id;
       const getItemProductId = (item) => (typeof item.product === 'string' ? item.product : item.product?._id)?.toString?.() || item.product;
       const existingIndex = formData.items.findIndex(item => getItemProductId(item) === productId);
 
@@ -810,7 +844,7 @@ const SalesOrders = ({ tabId }) => {
         // Product already in cart - increase quantity instead of adding a new row
         const existingItem = formData.items[existingIndex];
         const newQuantity = (existingItem.quantity || 0) + quantity;
-        const ppb = getPiecesPerBox(selectedProduct);
+        const ppb = getPiecesPerBox(productToAdd);
         const { boxes, pieces } = ppb ? piecesToBoxesAndPieces(newQuantity, ppb) : {};
         const newSubtotal = newQuantity * unitPrice;
         const newTaxAmount = formData.isTaxExempt ? 0 : (newSubtotal * (existingItem.taxRate || 0) / 100);
@@ -834,14 +868,18 @@ const SalesOrders = ({ tabId }) => {
         }));
       } else {
         // New product - add as new row (store boxes/pieces for dual-unit display)
-        const ppb = getPiecesPerBox(selectedProduct);
+        const ppb = getPiecesPerBox(productToAdd);
         const { boxes, pieces } = ppb ? piecesToBoxesAndPieces(quantity, ppb) : {};
         const newItem = {
-          product: selectedProduct._id,
-          productData: selectedProduct,
+          product: productToAdd._id,
+          productData: productToAdd,
           quantity,
           ...(ppb && { boxes, pieces }),
           unitPrice: unitPrice,
+          unitCost: productToAdd.isCustom ? (Number(customCost) || 0) : undefined,
+          isCustom: Boolean(productToAdd.isCustom),
+          customName: productToAdd.isCustom ? productToAdd.name : undefined,
+          unit: productToAdd.isCustom ? 'piece' : undefined,
           discountPercent: 0,
           taxRate: taxRate,
           subtotal,
@@ -860,6 +898,8 @@ const SalesOrders = ({ tabId }) => {
       setSelectedProduct(null);
       setQuantity(1);
       setCustomRate('');
+      setCustomCost('');
+      setCustomStock('');
       setCalculatedRate(0);
       setIsAddingProduct(false);
 
@@ -1212,14 +1252,22 @@ const SalesOrders = ({ tabId }) => {
     // Transform items to match backend expectations (quantity in pieces for stock)
     const transformedItems = formData.items.map(item => {
       const qty = Math.round(Number(item.quantity) || 1);
+      const isCustomItem = isManualItemId(item.product) || item.isCustom;
       const base = {
-        product: item.product,
         quantity: qty,
         unitPrice: item.unitPrice,
+        unitCost: item.unitCost ?? item.productData?.pricing?.cost ?? 0,
         totalPrice: item.total,
         invoicedQuantity: 0,
         remainingQuantity: qty
       };
+      if (!isCustomItem) {
+        base.product = item.product;
+      } else {
+        base.isCustom = true;
+        base.customName = item.customName || item.productData?.name || 'Custom Item';
+        base.unit = item.unit || 'piece';
+      }
       if (item.boxes != null || item.pieces != null) {
         base.boxes = item.boxes;
         base.pieces = item.pieces;
@@ -1268,20 +1316,29 @@ const SalesOrders = ({ tabId }) => {
       customer: customerId || undefined,
       items: formData.items.map(item => {
         const qty = Math.max(1, Math.round(Number(item.quantity) || 1));
+        const productId = getProductId(item);
+        const isCustomItem = isManualItemId(productId) || item.isCustom;
         const base = {
-          product: getProductId(item),
           quantity: qty,
           unitPrice: parseFloat(item.unitPrice) || 0,
+          unitCost: item.unitCost ?? item.productData?.pricing?.cost ?? 0,
           totalPrice: parseFloat(item.total) || parseFloat(item.unitPrice) * qty,
           invoicedQuantity: parseInt(item.invoicedQuantity, 10) || 0,
           remainingQuantity: parseInt(item.remainingQuantity, 10) ?? qty
         };
+        if (!isCustomItem) {
+          base.product = productId;
+        } else {
+          base.isCustom = true;
+          base.customName = item.customName || item.productData?.name || 'Custom Item';
+          base.unit = item.unit || 'piece';
+        }
         if (item.boxes != null || item.pieces != null) {
           base.boxes = item.boxes;
           base.pieces = item.pieces;
         }
         return base;
-      }).filter(item => item.product)
+      })
     };
 
     updateSalesOrderMutation({ id: selectedOrder._id || selectedOrder.id, ...cleanedData })
@@ -2185,29 +2242,55 @@ const SalesOrders = ({ tabId }) => {
                       emptyMessage="No products found"
                       value={productSearchTerm}
                     />
+                    {isManualEntryMode && (
+                      <button
+                        type="button"
+                        className="mt-1 text-xs text-blue-600 hover:text-blue-700 underline"
+                        onClick={() => {
+                          setIsAddingProduct(true);
+                          if (!customRate) setCustomRate('0');
+                          if (!customStock) setCustomStock('1');
+                        }}
+                      >
+                        Add "{productSearchTerm.trim()}" as custom item
+                      </button>
+                    )}
                   </div>
 
                   <div className="col-span-6 md:col-span-1">
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       Stock
                     </label>
-                    <span
-                      className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-1 rounded border border-gray-200 block text-center min-h-[2.5rem] flex flex-col items-center justify-center gap-0.5 leading-tight"
-                      title="Available stock"
-                    >
-                      {selectedProduct ? (
-                        hasDualUnit(selectedProduct) ? (
-                          <>
-                            <span className="text-xs">{formatStockDualLabel(selectedProduct.inventory?.currentStock || 0, selectedProduct)}</span>
-                            <span className="text-[10px] font-normal text-gray-500">available</span>
-                          </>
+                    {isManualEntryMode ? (
+                      <input
+                        type="number"
+                        step="1"
+                        autoComplete="off"
+                        value={customStock}
+                        onChange={(e) => setCustomStock(e.target.value)}
+                        className="input text-center h-10"
+                        placeholder="0"
+                        min="0"
+                      />
+                    ) : (
+                      <span
+                        className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-1 rounded border border-gray-200 block text-center min-h-[2.5rem] flex flex-col items-center justify-center gap-0.5 leading-tight"
+                        title="Available stock"
+                      >
+                        {selectedProduct ? (
+                          hasDualUnit(selectedProduct) ? (
+                            <>
+                              <span className="text-xs">{formatStockDualLabel(selectedProduct.inventory?.currentStock || 0, selectedProduct)}</span>
+                              <span className="text-[10px] font-normal text-gray-500">available</span>
+                            </>
+                          ) : (
+                            <span>{selectedProduct.inventory?.currentStock || 0} pcs</span>
+                          )
                         ) : (
-                          <span>{selectedProduct.inventory?.currentStock || 0} pcs</span>
-                        )
-                      ) : (
-                        '0'
-                      )}
-                    </span>
+                          '0'
+                        )}
+                      </span>
+                    )}
                   </div>
 
                   <div className={qtyMdClass}>
@@ -2229,16 +2312,29 @@ const SalesOrders = ({ tabId }) => {
                     />
                   </div>
 
-                  {showCostPrice && canViewCostPrice && (
+                  {(showCostPrice && canViewCostPrice) || isManualEntryMode ? (
                     <div className="col-span-6 md:col-span-1">
                       <label className="block text-sm font-medium text-gray-700 mb-2">
                         Cost
                       </label>
-                      <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center h-10 flex items-center justify-center" title="Last Purchase Price">
-                        {lastPurchasePrice !== null ? `${Math.round(lastPurchasePrice)}` : selectedProduct ? 'N/A' : '0'}
-                      </span>
+                      {isManualEntryMode ? (
+                        <input
+                          type="number"
+                          step="1"
+                          autoComplete="off"
+                          value={customCost}
+                          onChange={(e) => setCustomCost(e.target.value)}
+                          className="input text-center h-10"
+                          placeholder="0"
+                          min="0"
+                        />
+                      ) : (
+                        <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center h-10 flex items-center justify-center" title="Last Purchase Price">
+                          {lastPurchasePrice !== null ? `${Math.round(lastPurchasePrice)}` : selectedProduct ? 'N/A' : '0'}
+                        </span>
+                      )}
                     </div>
-                  )}
+                  ) : null}
 
                   <div className="col-span-6 md:col-span-1">
                     <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -2274,7 +2370,7 @@ const SalesOrders = ({ tabId }) => {
                       isLoading={isAddingToCart}
                       variant="default"
                       className="w-full flex items-center justify-center px-3 py-2"
-                      disabled={!selectedProduct || isAddingToCart}
+                      disabled={(!selectedProduct && !isManualEntryMode) || isAddingToCart}
                       title="Add to cart (or press Enter in Quantity/Rate fields - focus returns to search)"
                     >
                       <Plus className="h-4 w-4 mr-2" />
@@ -2384,9 +2480,36 @@ const SalesOrders = ({ tabId }) => {
 
                       {/* Stock - 1 column */}
                       <div className="col-span-1">
-                        <span className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-1 rounded border border-gray-200 block text-center h-8 flex items-center justify-center">
-                          {product?.inventory?.currentStock || 0}
-                        </span>
+                        {product?.isCustom ? (
+                          <input
+                            type="number"
+                            step="1"
+                            autoComplete="off"
+                            value={Math.round(product?.inventory?.currentStock || 0)}
+                            onChange={(e) => {
+                              const newStock = Math.max(1, parseInt(e.target.value) || 1);
+                              setFormData(prev => ({
+                                ...prev,
+                                items: prev.items.map((itm, i) =>
+                                  i === index ? {
+                                    ...itm,
+                                    quantity: Math.min(itm.quantity, newStock),
+                                    productData: {
+                                      ...(itm.productData || {}),
+                                      inventory: { ...(itm.productData?.inventory || {}), currentStock: newStock }
+                                    }
+                                  } : itm
+                                )
+                              }));
+                            }}
+                            className="input text-center h-8 w-full"
+                            min="1"
+                          />
+                        ) : (
+                          <span className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-1 rounded border border-gray-200 block text-center h-8 flex items-center justify-center">
+                            {product?.inventory?.currentStock || 0}
+                          </span>
+                        )}
                       </div>
 
                       {/* Quantity — dual unit uses compact 3-cell row inside col-span-2 */}
@@ -2425,17 +2548,35 @@ const SalesOrders = ({ tabId }) => {
                       </div>
 
                       {/* Purchase Price (Cost) - 1 column (conditional) - Between Quantity and Rate */}
-                      {showCostPrice && canViewCostPrice && (
+                      {(showCostPrice && canViewCostPrice) || product?.isCustom ? (
                         <div className="col-span-1">
-                          <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center h-8 flex items-center justify-center" title={lastPurchasePrices[item.product?.toString()] !== undefined ? 'Last Purchase Price' : 'Product Cost (from pricing)'}>
-                            {lastPurchasePrices[item.product?.toString()] !== undefined
-                              ? `${Math.round(lastPurchasePrices[item.product?.toString()])}`
-                              : (product?.pricing?.cost != null && product?.pricing?.cost !== '')
-                                ? `${Math.round(Number(product.pricing.cost))}`
-                                : 'N/A'}
-                          </span>
+                          {product?.isCustom ? (
+                            <input
+                              type="number"
+                              step="1"
+                              autoComplete="off"
+                              value={Math.round(item.unitCost || 0)}
+                              onChange={(e) => {
+                                const newCost = Math.max(0, parseInt(e.target.value) || 0);
+                                setFormData(prev => ({
+                                  ...prev,
+                                  items: prev.items.map((itm, i) => i === index ? { ...itm, unitCost: newCost } : itm)
+                                }));
+                              }}
+                              className="input text-center h-8 w-full"
+                              min="0"
+                            />
+                          ) : (
+                            <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center h-8 flex items-center justify-center" title={lastPurchasePrices[item.product?.toString()] !== undefined ? 'Last Purchase Price' : 'Product Cost (from pricing)'}>
+                              {lastPurchasePrices[item.product?.toString()] !== undefined
+                                ? `${Math.round(lastPurchasePrices[item.product?.toString()])}`
+                                : (product?.pricing?.cost != null && product?.pricing?.cost !== '')
+                                  ? `${Math.round(Number(product.pricing.cost))}`
+                                  : 'N/A'}
+                            </span>
+                          )}
                         </div>
-                      )}
+                      ) : null}
 
                       {/* Rate - 1 column */}
                       <div className="col-span-1">
@@ -2445,7 +2586,9 @@ const SalesOrders = ({ tabId }) => {
                           value={item.unitPrice}
                           onChange={(e) => {
                             const newPrice = parseFloat(e.target.value) || 0;
-                            const costPrice = lastPurchasePrices[item.product?.toString()];
+                            const costPrice = product?.isCustom
+                              ? (item.unitCost ?? 0)
+                              : lastPurchasePrices[item.product?.toString()];
 
                             // Check if new price is below cost (always check, regardless of showCostPrice)
                             if (costPrice !== undefined && newPrice < costPrice) {
@@ -2537,9 +2680,36 @@ const SalesOrders = ({ tabId }) => {
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                         <div>
                           <p className="text-xs text-gray-500 mb-1">Stock</p>
-                          <p className="text-sm font-medium text-gray-900">
-                            {product?.inventory?.currentStock || 0}
-                          </p>
+                          {product?.isCustom ? (
+                            <input
+                              type="number"
+                              step="1"
+                              autoComplete="off"
+                              value={Math.round(product?.inventory?.currentStock || 0)}
+                              onChange={(e) => {
+                                const newStock = Math.max(1, parseInt(e.target.value) || 1);
+                                setFormData(prev => ({
+                                  ...prev,
+                                  items: prev.items.map((itm, i) =>
+                                    i === index ? {
+                                      ...itm,
+                                      quantity: Math.min(itm.quantity, newStock),
+                                      productData: {
+                                        ...(itm.productData || {}),
+                                        inventory: { ...(itm.productData?.inventory || {}), currentStock: newStock }
+                                      }
+                                    } : itm
+                                  )
+                                }));
+                              }}
+                              className="input text-center h-8 text-sm w-full"
+                              min="1"
+                            />
+                          ) : (
+                            <p className="text-sm font-medium text-gray-900">
+                              {product?.inventory?.currentStock || 0}
+                            </p>
+                          )}
                         </div>
                         <div>
                           <p className="text-xs text-gray-500 mb-1">Quantity</p>
@@ -2583,7 +2753,9 @@ const SalesOrders = ({ tabId }) => {
                             value={item.unitPrice}
                             onChange={(e) => {
                               const newPrice = parseFloat(e.target.value) || 0;
-                              const costPrice = lastPurchasePrices[item.product?.toString()];
+                              const costPrice = product?.isCustom
+                                ? (item.unitCost ?? 0)
+                                : lastPurchasePrices[item.product?.toString()];
 
                               if (costPrice !== undefined && newPrice < costPrice) {
                                 const loss = costPrice - newPrice;
@@ -2623,18 +2795,36 @@ const SalesOrders = ({ tabId }) => {
                       </div>
 
                       {/* Cost Price (if shown) */}
-                      {showCostPrice && canViewCostPrice && (
+                      {(showCostPrice && canViewCostPrice) || product?.isCustom ? (
                         <div>
                           <p className="text-xs text-gray-500 mb-1">{lastPurchasePrices[item.product?.toString()] !== undefined ? 'Last Purchase Price' : 'Cost'}</p>
-                          <p className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200">
-                            {lastPurchasePrices[item.product?.toString()] !== undefined
-                              ? `${Math.round(lastPurchasePrices[item.product?.toString()])}`
-                              : (product?.pricing?.cost != null && product?.pricing?.cost !== '')
-                                ? `${Math.round(Number(product.pricing.cost))}`
-                                : 'N/A'}
-                          </p>
+                          {product?.isCustom ? (
+                            <input
+                              type="number"
+                              step="1"
+                              autoComplete="off"
+                              value={Math.round(item.unitCost || 0)}
+                              onChange={(e) => {
+                                const newCost = Math.max(0, parseInt(e.target.value) || 0);
+                                setFormData(prev => ({
+                                  ...prev,
+                                  items: prev.items.map((itm, i) => i === index ? { ...itm, unitCost: newCost } : itm)
+                                }));
+                              }}
+                              className="input text-center h-8 text-sm w-full"
+                              min="0"
+                            />
+                          ) : (
+                            <p className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200">
+                              {lastPurchasePrices[item.product?.toString()] !== undefined
+                                ? `${Math.round(lastPurchasePrices[item.product?.toString()])}`
+                                : (product?.pricing?.cost != null && product?.pricing?.cost !== '')
+                                  ? `${Math.round(Number(product.pricing.cost))}`
+                                  : 'N/A'}
+                            </p>
+                          )}
                         </div>
-                      )}
+                      ) : null}
                     </div>
                   </div>
                 );

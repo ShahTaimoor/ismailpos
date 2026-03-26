@@ -1,8 +1,11 @@
 const express = require('express');
 const { body, validationResult, query } = require('express-validator');
+const ExcelJS = require('exceljs');
 const XLSX = require('xlsx');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
+const http = require('http');
 const PDFDocument = require('pdfkit');
 const StockMovementService = require('../services/stockMovementService');
 const salesService = require('../services/salesService');
@@ -327,7 +330,17 @@ router.post('/', [
   body('orderType').isIn(['retail', 'wholesale', 'return', 'exchange']).withMessage('Invalid order type'),
   body('customer').optional().isUUID(4).withMessage('Invalid customer ID'),
   body('items').isArray({ min: 1 }).withMessage('Order must have at least one item'),
-  body('items.*.product').isUUID(4).withMessage('Invalid product ID'),
+  body('items').custom((items) => {
+    if (!Array.isArray(items)) return false;
+    for (const item of items) {
+      const hasProduct = typeof item?.product === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(item.product);
+      const hasCustomName = typeof item?.customName === 'string' && item.customName.trim().length > 0;
+      if (!hasProduct && !hasCustomName) {
+        throw new Error('Each item must include a valid product ID or customName');
+      }
+    }
+    return true;
+  }),
   body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
   body('payment.method').isIn(['cash', 'credit_card', 'debit_card', 'check', 'account', 'split', 'bank']).withMessage('Invalid payment method'),
   body('payment.amount').optional().isFloat({ min: 0 }).withMessage('Payment amount must be a positive number'),
@@ -497,7 +510,17 @@ router.put('/:id', [
   body('orderType').optional().isIn(['retail', 'wholesale', 'return', 'exchange']).withMessage('Invalid order type'),
   body('notes').optional().trim().isLength({ max: 1000 }).withMessage('Notes too long'),
   body('items').optional().isArray({ min: 1 }).withMessage('At least one item is required'),
-  body('items.*.product').optional().isUUID(4).withMessage('Valid product is required'),
+  body('items').optional().custom((items) => {
+    if (!Array.isArray(items)) return true;
+    for (const item of items) {
+      const hasProduct = typeof item?.product === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(item.product);
+      const hasCustomName = typeof item?.customName === 'string' && item.customName.trim().length > 0;
+      if (!hasProduct && !hasCustomName) {
+        throw new Error('Each item must include a valid product ID or customName');
+      }
+    }
+    return true;
+  }),
   body('items.*.quantity').optional().isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
   body('items.*.unitPrice').optional().isFloat({ min: 0 }).withMessage('Unit price must be positive'),
   body('billDate').optional().isISO8601().withMessage('Valid bill date required (ISO 8601 format)'),
@@ -598,6 +621,10 @@ router.put('/:id', [
     if (req.body.items && req.body.items.length > 0) {
       // Validate products and stock availability
       for (const item of req.body.items) {
+        const customName = typeof item.customName === 'string' ? item.customName.trim() : '';
+        const isCustomItem = Boolean(item.isCustom || (!item.product && customName));
+        if (isCustomItem) continue;
+
         // Try to find as product first, then as variant
         let product = await productRepository.findById(item.product);
         let isVariant = false;
@@ -645,6 +672,41 @@ router.put('/:id', [
       const newOrderItems = [];
 
       for (const item of req.body.items) {
+        const customName = typeof item.customName === 'string' ? item.customName.trim() : '';
+        const isCustomItem = Boolean(item.isCustom || (!item.product && customName));
+
+        if (isCustomItem) {
+          const itemSubtotal = item.quantity * item.unitPrice;
+          const itemDiscount = itemSubtotal * ((item.discountPercent || 0) / 100);
+          const itemTaxable = itemSubtotal - itemDiscount;
+          const taxRate = item.taxRate !== undefined ? item.taxRate : 0;
+          const itemTax = order.pricing.isTaxExempt ? 0 : itemTaxable * taxRate;
+          const unitCost = Number(item.unitCost ?? item.cost_price ?? 0) || 0;
+
+          newOrderItems.push({
+            product: null,
+            productName: customName || 'CUSTOM ITEM',
+            customName: customName || 'CUSTOM ITEM',
+            isCustom: true,
+            unit: item.unit || 'piece',
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            unitCost,
+            cost_price: unitCost,
+            discountPercent: item.discountPercent || 0,
+            taxRate: item.taxRate || 0,
+            subtotal: itemSubtotal,
+            discountAmount: itemDiscount,
+            taxAmount: itemTax,
+            total: itemSubtotal - itemDiscount + itemTax
+          });
+
+          newSubtotal += itemSubtotal;
+          newTotalDiscount += itemDiscount;
+          newTotalTax += itemTax;
+          continue;
+        }
+
         // Try to find as product first, then as variant (for tax rate and cost)
         let productForTax = await productRepository.findById(item.product);
         let isVariantForTax = false;
@@ -765,6 +827,10 @@ router.put('/:id', [
       updateData.items = order.items.map(it => ({
         product_id: it.product_id || it.product,
         product: it.product_id || it.product,
+        productName: it.productName || it.customName || null,
+        customName: it.customName || it.productName || null,
+        isCustom: Boolean(it.isCustom || (!it.product && (it.customName || it.productName))),
+        unit: it.unit || null,
         quantity: it.quantity,
         unitPrice: it.unitPrice,
         unitCost: it.unitCost ?? it.cost_price ?? 0,
@@ -846,6 +912,7 @@ router.put('/:id', [
         const inventoryService = require('../services/inventoryService');
 
         for (const newItem of req.body.items) {
+          if (newItem.isCustom || newItem.customName || !newItem.product) continue;
           const oldItem = oldItems.find(oi => {
             const oldProductId = oi.product?._id ? oi.product._id.toString() : oi.product?.toString() || oi.product;
             const newProductId = newItem.product?.toString() || newItem.product;
@@ -888,7 +955,9 @@ router.put('/:id', [
         // Handle removed items (items that were in old but not in new)
         for (const oldItem of oldItems) {
           const oldProductId = oldItem.product?._id ? oldItem.product._id.toString() : oldItem.product?.toString() || oldItem.product;
+          if (!oldProductId) continue;
           const stillExists = req.body.items.find(newItem => {
+            if (newItem.isCustom || newItem.customName || !newItem.product) return false;
             const newProductId = newItem.product?.toString() || newItem.product;
             return oldProductId === newProductId;
           });
@@ -1211,12 +1280,42 @@ router.post('/export/excel', [auth, requirePermission('view_orders')], async (re
       // Fetch names from both products and product_variants tables
       const [productsData, variantsData] = await Promise.all([
         productRepository.findAll({ ids: allIds }),
-        // For variants, we use a direct query since findAll may not support ids filter well
-        pgQuery('SELECT id, variant_name, display_name FROM product_variants WHERE id = ANY($1::uuid[])', [allIds])
+        pgQuery('SELECT * FROM product_variants WHERE id = ANY($1::uuid[])', [allIds])
       ]);
 
-      productsData.forEach(p => { productMap[p.id || p._id] = p.name; });
-      variantsData.rows.forEach(v => { productMap[v.id] = v.display_name || v.variant_name; });
+      productsData.forEach(p => { 
+        productMap[p.id || p._id] = { name: p.name, image: p.imageUrl || p.image_url }; 
+      });
+
+      const baseProductIds = [];
+      variantsData.rows.forEach(v => { 
+        const inv = typeof v.inventory_data === 'string' ? JSON.parse(v.inventory_data) : v.inventory_data;
+        const prc = typeof v.pricing === 'string' ? JSON.parse(v.pricing) : v.pricing;
+        const vImage = inv?.imageUrl || prc?.imageUrl || v.image_url || v.imageUrl;
+        
+        productMap[v.id] = { 
+          name: v.display_name || v.variant_name, 
+          image: vImage,
+          baseProductId: v.base_product_id
+        }; 
+        if (!vImage && v.base_product_id) baseProductIds.push(v.base_product_id);
+      });
+
+      // Fetch base product images as fallback for variants
+      if (baseProductIds.length > 0) {
+        const baseProducts = await productRepository.findAll({ ids: [...new Set(baseProductIds)] });
+        baseProducts.forEach(b => {
+          const bId = b.id || b._id;
+          const bImage = b.imageUrl || b.image_url;
+          if (bImage) {
+            Object.values(productMap).forEach(entry => {
+              if (entry.baseProductId === bId && !entry.image) {
+                entry.image = bImage;
+              }
+            });
+          }
+        });
+      }
     }
 
     const excelData = await Promise.all(orders.map(async (order) => {
@@ -1263,57 +1362,128 @@ router.post('/export/excel', [auth, requirePermission('view_orders')], async (re
       };
     }));
 
-    // Create Excel workbook
-    const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(excelData);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `sales-detailed-${timestamp}.xlsx`;
+    const exportsFolder = path.join(__dirname, '../exports');
+    if (!fs.existsSync(exportsFolder)) {
+      fs.mkdirSync(exportsFolder, { recursive: true });
+    }
+    const filePath = path.join(exportsFolder, filename);
 
-    // Set column widths
-    const columnWidths = [
-      { wch: 15 }, // Order Number
-      { wch: 25 }, // Customer
-      { wch: 25 }, // Customer Email
-      { wch: 15 }, // Customer Phone
-      { wch: 12 }, // Order Type
-      { wch: 15 }, // Status
-      { wch: 15 }, // Payment Status
-      { wch: 15 }, // Payment Method
-      { wch: 12 }, // Order Date
-      { wch: 12 }, // Subtotal
-      { wch: 12 }, // Discount
-      { wch: 10 }, // Tax
-      { wch: 12 }, // Total
-      { wch: 12 }, // Amount Paid
-      { wch: 15 }, // Remaining Balance
-      { wch: 10 }, // Items Count
-      { wch: 50 }, // Items Summary
-      { wch: 10 }, // Tax Exempt
-      { wch: 30 }, // Notes
-      { wch: 20 }, // Created By
-      { wch: 12 }  // Created Date
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Sales Detailed');
+
+    // Define columns
+    const columns = [
+      { header: 'P/I No.:', key: 'orderNumber', width: 15 },
+      { header: 'Date', key: 'date', width: 12 },
+      { header: 'Customer', key: 'customer', width: 25 },
+      { header: 'S.No', key: 'sno', width: 8 },
+      { header: 'Product Name', key: 'pname', width: 35 },
+      { header: 'Product Image', key: 'image', width: 15 },
+      { header: 'Quantity', key: 'qty', width: 10 },
+      { header: 'Price', key: 'price', width: 12 },
+      { header: 'Line Total', key: 'lineTotal', width: 15 },
+      { header: 'Order Total', key: 'orderTotal', width: 15 },
+      { header: 'Status', key: 'status', width: 12 },
+      { header: 'Notes', key: 'notes', width: 20 }
     ];
-    worksheet['!cols'] = columnWidths;
+    worksheet.columns = columns;
 
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Invoices');
+    // Header styling
+    worksheet.getRow(1).font = { bold: true };
+    worksheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
 
-    // Ensure exports directory exists
-    const exportsDir = path.join(__dirname, '../exports');
-    if (!fs.existsSync(exportsDir)) {
-      fs.mkdirSync(exportsDir, { recursive: true });
+    for (let i = 0; i < excelData.length; i++) {
+      const orderData = excelData[i];
+      const order = orders[i];
+      const items = Array.isArray(order.items) ? order.items : [];
+
+      if (items.length === 0) {
+        worksheet.addRow({
+          orderNumber: orderData['P/I No.:'],
+          date: orderData['P/I Date'],
+          customer: orderData['Customer'],
+          orderTotal: orderData['Total'],
+          status: orderData['Status'],
+          notes: orderData['Notes']
+        });
+        continue;
+      }
+
+      for (let j = 0; j < items.length; j++) {
+        const item = items[j];
+        const pId = item.productId || item.product_id || item.product || item.variantId || item.variant_id;
+        const pInfo = productMap[pId] || {};
+        const pName = item.name || item.product_name || pInfo.name || 'Unknown Item';
+        const qty = item.quantity || 0;
+        const price = item.unitPrice || item.unit_price || 0;
+        
+        const row = worksheet.addRow({
+          orderNumber: orderData['P/I No.:'],
+          date: orderData['P/I Date'],
+          customer: orderData['Customer'],
+          sno: j + 1,
+          pname: pName,
+          qty: qty,
+          price: price,
+          lineTotal: (qty * price).toFixed(2),
+          orderTotal: j === 0 ? orderData['Total'] : '',
+          status: orderData['Status'],
+          notes: orderData['Notes']
+        });
+
+        // Add actual image if exists
+        const imgPath = item.imageUrl || item.image || pInfo.image;
+        if (imgPath) {
+          try {
+            let imageBuffer = null;
+            let extension = 'jpeg';
+            const fileName = imgPath.split('/').pop();
+            const localFilePath = path.join(__dirname, '../uploads/images/optimized', fileName);
+            
+            if (imgPath.startsWith('http')) {
+              // Fetch remote image (Cloudinary, etc.)
+              imageBuffer = await new Promise((resolve, reject) => {
+                const protocol = imgPath.startsWith('https') ? https : http;
+                protocol.get(imgPath, (res) => {
+                  if (res.statusCode !== 200) return reject();
+                  const chunks = [];
+                  res.on('data', chunk => chunks.push(chunk));
+                  res.on('end', () => resolve(Buffer.concat(chunks)));
+                }).on('error', reject);
+              }).catch(() => null);
+              extension = (fileName.split('.').pop() || 'jpeg').toLowerCase();
+            } else if (fs.existsSync(localFilePath)) {
+              // Use local file
+              imageBuffer = fs.readFileSync(localFilePath);
+              extension = (fileName.split('.').pop() || 'jpeg').toLowerCase();
+            }
+
+            if (imageBuffer) {
+              const imageId = workbook.addImage({
+                buffer: imageBuffer,
+                extension: extension === 'jpg' ? 'jpeg' : extension,
+              });
+              
+              worksheet.addImage(imageId, {
+                tl: { col: 5, row: row.number - 1 + 0.1 },
+                ext: { width: 50, height: 50 },
+                editAs: 'oneCell'
+              });
+              row.height = 45;
+            }
+          } catch (err) {
+            console.error('Failed to add excel image:', err);
+          }
+        }
+        
+        row.alignment = { vertical: 'middle', horizontal: 'left' };
+      }
     }
 
-    // Generate unique filename with timestamp
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
-    const filename = `sales_${timestamp}.xlsx`;
-    const filepath = path.join(exportsDir, filename);
-
-    XLSX.writeFile(workbook, filepath);
-
-    res.json({
-      message: 'Orders exported successfully',
-      filename: filename,
-      recordCount: excelData.length,
-      downloadUrl: `/api/orders/download/${filename}`
-    });
+    await workbook.xlsx.writeFile(filePath);
+    res.json({ filename });
 
   } catch (error) {
     console.error('Excel export error:', error);

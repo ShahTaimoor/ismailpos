@@ -423,6 +423,43 @@ class SalesService {
     let totalTax = 0;
 
     for (const item of items) {
+      const customName = typeof item.customName === 'string' ? item.customName.trim() : '';
+      const isCustomItem = Boolean(item.isCustom || (!item.product && customName));
+
+      if (isCustomItem) {
+        const unitPrice = Number(item.unitPrice) || 0;
+        const unitCost = Number(item.unitCost ?? item.cost_price ?? 0) || 0;
+        const itemDiscountPercent = Number(item.discountPercent) || 0;
+        const itemSubtotal = Number(item.quantity) * unitPrice;
+        const itemDiscount = itemSubtotal * (itemDiscountPercent / 100);
+        const itemTaxable = itemSubtotal - itemDiscount;
+        const taxRate = Number(item.taxRate) || 0;
+        const itemTax = isTaxExempt ? 0 : itemTaxable * taxRate;
+
+        orderItems.push({
+          product: null,
+          productName: customName || 'CUSTOM ITEM',
+          customName: customName || 'CUSTOM ITEM',
+          isCustom: true,
+          unit: item.unit || 'piece',
+          quantity: item.quantity,
+          unitCost,
+          cost_price: unitCost,
+          unitPrice,
+          discountPercent: itemDiscountPercent,
+          taxRate,
+          subtotal: itemSubtotal,
+          discountAmount: itemDiscount,
+          taxAmount: itemTax,
+          total: itemSubtotal - itemDiscount + itemTax
+        });
+
+        subtotal += itemSubtotal;
+        totalDiscount += itemDiscount;
+        totalTax += itemTax;
+        continue;
+      }
+
       // Try to find as product first, then as variant
       let product = await productRepository.findById(item.product);
       let isVariant = false;
@@ -518,6 +555,7 @@ class SalesService {
     // Inventory Updates (unless skipped)
     if (!skipInventoryUpdate) {
       for (const item of items) {
+        if (item.isCustom || item.customName || !item.product) continue;
         await inventoryService.updateStock({
           productId: item.product,
           type: 'out',
@@ -586,7 +624,13 @@ class SalesService {
       payment: paymentStatus ? { status: paymentStatus } : undefined
     };
 
-    await StockMovementService.trackSalesOrder(orderPayload, user, {});
+    const orderPayloadWithStockItems = {
+      ...orderPayload,
+      items: orderItems.filter((item) => item.product)
+    };
+    if (orderPayloadWithStockItems.items.length > 0) {
+      await StockMovementService.trackSalesOrder(orderPayloadWithStockItems, user, {});
+    }
 
     if (orderStatus === 'confirmed' && paymentStatus === 'paid') {
       await profitDistributionService.distributeProfitForOrder(orderPayload, user, {});
@@ -597,7 +641,7 @@ class SalesService {
       const isAccountPayment = payment.method === 'account' || amountPaid < orderTotal;
 
       if (isAccountPayment) {
-        const productIds = orderItems.map(item => item.product);
+        const productIds = orderItems.map(item => item.product).filter(Boolean);
         const productMap = new Map();
         for (const id of productIds) {
           const p = await productRepository.findById(id);
@@ -606,7 +650,9 @@ class SalesService {
 
         const lineItems = orderItems.map(item => ({
           product: item.product,
-          description: productMap.get((item.product && item.product.toString ? item.product.toString() : item.product)) || 'Product',
+          description: item.isCustom
+            ? (item.customName || item.productName || 'Custom Item')
+            : (productMap.get((item.product && item.product.toString ? item.product.toString() : item.product)) || 'Product'),
           quantity: item.quantity,
           unitPrice: item.unitPrice || 0,
           discountAmount: item.discountAmount || 0,

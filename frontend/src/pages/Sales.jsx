@@ -79,6 +79,9 @@ const getLocalDateString = (date = new Date()) => {
   return `${year}-${month}-${day}`;
 };
 
+const isManualItemId = (id) => typeof id === 'string' && id.startsWith('manual:');
+const isUuidV4 = (value) => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+
 // ProductSearch Component
 const ProductSearch = ({
   onAddProduct,
@@ -101,8 +104,11 @@ const ProductSearch = ({
   const [isAddingToCart, setIsAddingToCart] = useState(false);
   const [searchKey, setSearchKey] = useState(0); // Key to force re-render
   const [lastPurchasePrice, setLastPurchasePrice] = useState(null);
+  const [customCost, setCustomCost] = useState('');
+  const [customStock, setCustomStock] = useState('');
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const productSearchRef = useRef(null);
+  const isManualEntryMode = !selectedProduct && productSearchTerm.trim().length > 0;
 
   // Fetch all products (or a larger set) for client-side fuzzy search
   const [getLastPurchasePrice] = useLazyGetLastPurchasePriceQuery();
@@ -244,6 +250,34 @@ const ProductSearch = ({
 
     setCalculatedRate(calculatedPrice);
     setCustomRate(calculatedPrice.toString());
+    setCustomCost((product?.pricing?.cost ?? '').toString());
+    setCustomStock('');
+  };
+
+  const buildManualItem = () => {
+    const manualName = (productSearchTerm || '').trim();
+    if (!manualName) return null;
+    const normalized = manualName.toLowerCase().replace(/\s+/g, '-');
+    return {
+      _id: `manual:${normalized}`,
+      id: `manual:${normalized}`,
+      name: manualName,
+      isCustom: true,
+      inventory: { currentStock: Number(customStock) || 0, reorderPoint: 0 },
+      pricing: { retail: Number(customRate) || 0, wholesale: Number(customRate) || 0, cost: Number(customCost) || 0 }
+    };
+  };
+
+  const handleSearchTermChange = (value) => {
+    setProductSearchTerm(value);
+    if (!selectedProduct) {
+      const hasValue = Boolean((value || '').trim());
+      setIsAddingProduct(hasValue);
+      if (!hasValue) {
+        setCustomStock('');
+        setCustomCost('');
+      }
+    }
   };
 
   // Update rate when price type changes
@@ -263,21 +297,27 @@ const ProductSearch = ({
   }, [priceType, selectedProduct]);
 
   const handleAddToCart = async () => {
-    if (!selectedProduct) return;
+    const manualProduct = !selectedProduct ? buildManualItem() : null;
+    const productToAdd = selectedProduct || manualProduct;
+    if (!productToAdd) return;
 
     // Validate that rate is filled
     if (!customRate || parseInt(customRate) <= 0) {
       toast.error('Please enter a valid rate');
       return;
     }
+    if (productToAdd.isCustom && (Number(customStock) <= 0 || Number.isNaN(Number(customStock)))) {
+      toast.error('Please enter custom stock greater than 0');
+      return;
+    }
 
     // Get display name for error messages
-    const displayName = selectedProduct.isVariant
-      ? (selectedProduct.displayName || selectedProduct.variantName || selectedProduct.name)
-      : selectedProduct.name;
+    const displayName = productToAdd.isVariant
+      ? (productToAdd.displayName || productToAdd.variantName || productToAdd.name)
+      : productToAdd.name;
 
     // Check if product/variant is out of stock
-    const currentStock = selectedProduct.inventory?.currentStock || 0;
+    const currentStock = productToAdd.inventory?.currentStock || 0;
     if (currentStock === 0) {
       toast.error(`${displayName} is out of stock and cannot be added to the invoice.`);
       return;
@@ -295,7 +335,9 @@ const ProductSearch = ({
       const unitPrice = parseInt(customRate) || Math.round(calculatedRate);
 
       // Check if sale price is less than cost price (always check, regardless of showCostPrice)
-      const costPrice = lastPurchasePrice !== null ? lastPurchasePrice : selectedProduct?.pricing?.cost;
+      const costPrice = productToAdd.isCustom
+        ? (Number(customCost) || 0)
+        : (lastPurchasePrice !== null ? lastPurchasePrice : productToAdd?.pricing?.cost);
       if (costPrice !== undefined && costPrice !== null && unitPrice < costPrice) {
         const loss = costPrice - unitPrice;
         const lossPercent = ((loss / costPrice) * 100).toFixed(1);
@@ -315,19 +357,25 @@ const ProductSearch = ({
         );
       }
 
-      const ppb = getPiecesPerBox(selectedProduct);
+      const ppb = getPiecesPerBox(productToAdd);
       const { boxes, pieces } = ppb ? piecesToBoxesAndPieces(quantity, ppb) : {};
       onAddProduct({
-        product: selectedProduct,
+        product: productToAdd,
         quantity: quantity,
         ...(ppb && { boxes, pieces }),
-        unitPrice: unitPrice
+        unitPrice: unitPrice,
+        unitCost: productToAdd.isCustom ? (Number(customCost) || 0) : undefined,
+        unit: productToAdd.isCustom ? 'piece' : undefined,
+        isCustom: Boolean(productToAdd.isCustom),
+        customName: productToAdd.isCustom ? productToAdd.name : undefined
       });
 
       // Reset form
       setSelectedProduct(null);
       setQuantity(1);
       setCustomRate('');
+      setCustomCost('');
+      setCustomStock('');
       setCalculatedRate(0);
       setIsAddingProduct(false);
 
@@ -345,7 +393,7 @@ const ProductSearch = ({
       // Show success message
       const priceLabel = selectedCustomer?.businessType === 'wholesale' ? 'wholesale' :
         selectedCustomer?.businessType === 'distributor' ? 'distributor' : 'retail';
-      toast.success(`${selectedProduct.name} added to cart at ${priceLabel} price: ${Math.round(unitPrice)}`);
+      toast.success(`${productToAdd.name} added to cart at ${priceLabel} price: ${Math.round(unitPrice)}`);
     } catch (error) {
       handleApiError(error, 'Product Price Check');
     } finally {
@@ -362,6 +410,8 @@ const ProductSearch = ({
       setSelectedProduct(null);
       setQuantity(1);
       setCustomRate('');
+      setCustomCost('');
+      setCustomStock('');
       setCalculatedRate(0);
       setIsAddingProduct(false);
     }
@@ -448,13 +498,26 @@ const ProductSearch = ({
                   placeholder="Search or select product..."
                   items={products || []}
                   onSelect={handleProductSelect}
-                  onSearch={setProductSearchTerm}
+                  onSearch={handleSearchTermChange}
                   displayKey={productDisplayKey}
                   selectedItem={selectedProduct}
                   loading={productsLoading || variantsLoading}
                   emptyMessage={productSearchTerm.length > 0 ? "No products found" : "Start typing to search products..."}
                   value={productSearchTerm}
                 />
+                {isManualEntryMode && (
+                  <button
+                    type="button"
+                    className="mt-1 text-xs text-blue-600 hover:text-blue-700 underline"
+                    onClick={() => {
+                      setIsAddingProduct(true);
+                      if (!customRate) setCustomRate('0');
+                      if (!customStock) setCustomStock('1');
+                    }}
+                  >
+                    Add "{productSearchTerm.trim()}" as custom item
+                  </button>
+                )}
               </div>
               <button
                 type="button"
@@ -467,34 +530,48 @@ const ProductSearch = ({
             </div>
           </div>
 
-          {/* Fields Grid - 2 columns on mobile */}
-          <div className="grid grid-cols-2 gap-3">
+          {/* Fields Grid - single row */}
+          <div className="grid grid-cols-6 gap-2 items-end">
             {/* Stock */}
-            <div>
+            <div className="col-span-1">
               <label className="block text-xs font-medium text-gray-700 mb-1">
                 Stock
               </label>
-              <span
-                className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-2 rounded border border-gray-200 block text-center min-h-[2.5rem] flex flex-col items-center justify-center gap-0.5 leading-tight"
-                title={selectedProduct ? `Available stock (pieces)` : ''}
-              >
-                {selectedProduct ? (
-                  hasDualUnit(selectedProduct) ? (
-                    <>
-                      <span className="text-xs">{formatStockDualLabel(selectedProduct.inventory?.currentStock ?? 0, selectedProduct)}</span>
-                      <span className="text-[10px] font-normal text-gray-500">available</span>
-                    </>
+              {isManualEntryMode ? (
+                <Input
+                  type="number"
+                  step="1"
+                  autoComplete="off"
+                  value={customStock}
+                  onChange={(e) => setCustomStock(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  className="text-center h-10"
+                  placeholder="0"
+                  min="0"
+                />
+              ) : (
+                <span
+                  className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-2 rounded border border-gray-200 block text-center min-h-[2.5rem] flex flex-col items-center justify-center gap-0.5 leading-tight"
+                  title={selectedProduct ? `Available stock (pieces)` : ''}
+                >
+                  {selectedProduct ? (
+                    hasDualUnit(selectedProduct) ? (
+                      <>
+                        <span className="text-xs">{formatStockDualLabel(selectedProduct.inventory?.currentStock ?? 0, selectedProduct)}</span>
+                        <span className="text-[10px] font-normal text-gray-500">available</span>
+                      </>
+                    ) : (
+                      <span>{selectedProduct.inventory?.currentStock ?? 0} pcs</span>
+                    )
                   ) : (
-                    <span>{selectedProduct.inventory?.currentStock ?? 0} pcs</span>
-                  )
-                ) : (
-                  '0'
-                )}
-              </span>
+                    '0'
+                  )}
+                </span>
+              )}
             </div>
 
             {/* Amount */}
-            <div>
+            <div className="col-span-1">
               <label className="block text-xs font-medium text-gray-700 mb-1">
                 Amount
               </label>
@@ -504,7 +581,7 @@ const ProductSearch = ({
             </div>
 
             {/* Quantity — full width on mobile when dual unit */}
-            <div className={dualUnit ? 'col-span-2' : ''}>
+            <div className="col-span-1">
               <label className="block text-xs font-medium text-gray-700 mb-1">
                 Quantity
               </label>
@@ -512,7 +589,7 @@ const ProductSearch = ({
                 product={selectedProduct}
                 quantity={quantity}
                 onChange={(q) => setQuantity(q)}
-                max={selectedProduct?.inventory?.currentStock}
+                max={isManualEntryMode ? (Number(customStock) || undefined) : selectedProduct?.inventory?.currentStock}
                 showRemainingAfterSale={showRemainingStockAfterSale}
                 showBoxInput={dualUnitShowBoxInput}
                 showPiecesInput={dualUnitShowPiecesInput}
@@ -523,7 +600,7 @@ const ProductSearch = ({
             </div>
 
             {/* Rate */}
-            <div>
+            <div className="col-span-1">
               <label className="block text-xs font-medium text-gray-700 mb-1">
                 Rate
               </label>
@@ -542,36 +619,49 @@ const ProductSearch = ({
             </div>
 
             {/* Cost - Full width if shown */}
-            {showCostPrice && hasCostPricePermission && (
-              <div className="col-span-2">
+            {(showCostPrice && hasCostPricePermission) || isManualEntryMode ? (
+              <div className="col-span-1">
                 <label className="block text-xs font-medium text-gray-700 mb-1">
                   Cost
                 </label>
-                <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-2 rounded border border-red-200 block text-center h-10 flex items-center justify-center" title="Cost Price">
-                  {lastPurchasePrice !== null
-                    ? `${Math.round(lastPurchasePrice)}`
-                    : (selectedProduct?.pricing?.cost !== undefined && selectedProduct?.pricing?.cost !== null)
-                      ? `${Math.round(selectedProduct.pricing.cost)}`
-                      : selectedProduct ? 'N/A' : '0'}
-                </span>
+                {isManualEntryMode ? (
+                  <Input
+                    type="number"
+                    step="1"
+                    autoComplete="off"
+                    value={customCost}
+                    onChange={(e) => setCustomCost(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    className="text-center h-10"
+                    placeholder="0"
+                    min="0"
+                  />
+                ) : (
+                  <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-2 rounded border border-red-200 block text-center h-10 flex items-center justify-center" title="Cost Price">
+                    {lastPurchasePrice !== null
+                      ? `${Math.round(lastPurchasePrice)}`
+                      : (selectedProduct?.pricing?.cost !== undefined && selectedProduct?.pricing?.cost !== null)
+                        ? `${Math.round(selectedProduct.pricing.cost)}`
+                        : selectedProduct ? 'N/A' : '0'}
+                  </span>
+                )}
               </div>
-            )}
-          </div>
+            ) : null}
 
-          {/* Add Button - Full width on mobile */}
-          <div>
-            <LoadingButton
-              type="button"
-              onClick={handleAddToCart}
-              isLoading={isAddingToCart}
-              variant="default"
-              className="w-full flex items-center justify-center px-4 py-2.5 h-11"
-              disabled={!selectedProduct || isAddingToCart}
-              title="Add to cart (or press Enter in Quantity/Rate fields - focus returns to search)"
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              Add
-            </LoadingButton>
+            <div className="col-span-1">
+              <LoadingButton
+                type="button"
+                onClick={handleAddToCart}
+                isLoading={isAddingToCart}
+                variant="default"
+                className="w-full flex items-center justify-center px-2 h-10"
+                disabled={(!selectedProduct && !productSearchTerm.trim()) || isAddingToCart}
+                title="Add to cart"
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                Add
+              </LoadingButton>
+            </div>
           </div>
         </div>
 
@@ -590,7 +680,7 @@ const ProductSearch = ({
                   placeholder="Search or select product..."
                   items={products || []}
                   onSelect={handleProductSelect}
-                  onSearch={setProductSearchTerm}
+                  onSearch={handleSearchTermChange}
                   displayKey={productDisplayKey}
                   selectedItem={selectedProduct}
                   loading={productsLoading || variantsLoading}
@@ -614,23 +704,36 @@ const ProductSearch = ({
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Stock
             </label>
-            <span
-              className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-2 rounded border border-gray-200 block text-center min-h-[2.75rem] flex flex-col items-center justify-center gap-0.5 leading-snug"
-              title={selectedProduct ? 'Available stock (pieces)' : ''}
-            >
-              {selectedProduct ? (
-                dualUnit ? (
-                  <>
-                    <span className="text-xs">{formatStockDualLabel(selectedProduct.inventory?.currentStock ?? 0, selectedProduct)}</span>
-                    <span className="text-[10px] font-normal text-gray-500">available</span>
-                  </>
+            {isManualEntryMode ? (
+              <Input
+                type="number"
+                step="1"
+                autoComplete="off"
+                value={customStock}
+                onChange={(e) => setCustomStock(e.target.value)}
+                className="text-center h-10"
+                placeholder="0"
+                min="0"
+              />
+            ) : (
+              <span
+                className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-2 rounded border border-gray-200 block text-center min-h-[2.75rem] flex flex-col items-center justify-center gap-0.5 leading-snug"
+                title={selectedProduct ? 'Available stock (pieces)' : ''}
+              >
+                {selectedProduct ? (
+                  dualUnit ? (
+                    <>
+                      <span className="text-xs">{formatStockDualLabel(selectedProduct.inventory?.currentStock ?? 0, selectedProduct)}</span>
+                      <span className="text-[10px] font-normal text-gray-500">available</span>
+                    </>
+                  ) : (
+                    <span>{selectedProduct.inventory?.currentStock ?? 0} pcs</span>
+                  )
                 ) : (
-                  <span>{selectedProduct.inventory?.currentStock ?? 0} pcs</span>
-                )
-              ) : (
-                '0'
-              )}
-            </span>
+                  '0'
+                )}
+              </span>
+            )}
           </div>
 
           {/* Quantity — wider when dual unit (boxes + pieces + total) */}
@@ -642,7 +745,7 @@ const ProductSearch = ({
               product={selectedProduct}
               quantity={quantity}
               onChange={(q) => setQuantity(q)}
-              max={selectedProduct?.inventory?.currentStock}
+              max={isManualEntryMode ? (Number(customStock) || undefined) : selectedProduct?.inventory?.currentStock}
               showRemainingAfterSale={showRemainingStockAfterSale}
               showBoxInput={dualUnitShowBoxInput}
               showPiecesInput={dualUnitShowPiecesInput}
@@ -653,20 +756,33 @@ const ProductSearch = ({
           </div>
 
           {/* Purchase Price - 1 column (conditional) - Between Quantity and Rate */}
-          {showCostPrice && hasCostPricePermission && (
+          {(showCostPrice && hasCostPricePermission) || isManualEntryMode ? (
             <div className="col-span-1">
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Cost
               </label>
-              <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center h-10 flex items-center justify-center" title="Cost Price">
-                {lastPurchasePrice !== null
-                  ? `${Math.round(lastPurchasePrice)}`
-                  : (selectedProduct?.pricing?.cost !== undefined && selectedProduct?.pricing?.cost !== null)
-                    ? `${Math.round(selectedProduct.pricing.cost)}`
-                    : selectedProduct ? 'N/A' : '0'}
-              </span>
+              {isManualEntryMode ? (
+                <Input
+                  type="number"
+                  step="1"
+                  autoComplete="off"
+                  value={customCost}
+                  onChange={(e) => setCustomCost(e.target.value)}
+                  className="text-center h-10"
+                  placeholder="0"
+                  min="0"
+                />
+              ) : (
+                <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center h-10 flex items-center justify-center" title="Cost Price">
+                  {lastPurchasePrice !== null
+                    ? `${Math.round(lastPurchasePrice)}`
+                    : (selectedProduct?.pricing?.cost !== undefined && selectedProduct?.pricing?.cost !== null)
+                      ? `${Math.round(selectedProduct.pricing.cost)}`
+                      : selectedProduct ? 'N/A' : '0'}
+                </span>
+              )}
             </div>
-          )}
+          ) : null}
 
           {/* Rate - 1 column (reduced from 2) */}
           <div className="col-span-1">
@@ -708,7 +824,7 @@ const ProductSearch = ({
               isLoading={isAddingToCart}
               variant="default"
               className="w-full flex items-center justify-center px-3 py-2 h-10"
-              disabled={!selectedProduct || isAddingToCart}
+              disabled={(!selectedProduct && !productSearchTerm.trim()) || isAddingToCart}
               title="Add to cart (or press Enter in Quantity/Rate fields - focus returns to search)"
             >
               <Plus className="h-4 w-4 mr-2" />
@@ -879,12 +995,38 @@ export const Sales = ({ tabId, editData }) => {
 
       // Set the cart items
       if (editData.items && editData.items.length > 0) {
-        const formattedItems = editData.items.map(item => ({
-          product: item.product,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice || item.price || (item.product?.pricing?.retail || 0),
-          totalPrice: item.totalPrice || (item.quantity * (item.unitPrice || item.price || (item.product?.pricing?.retail || 0)))
-        }));
+        const formattedItems = editData.items.map((item, index) => {
+          const existingProduct = item.product;
+          const customName = item.customName || item.productName || existingProduct?.name || `Custom Item ${index + 1}`;
+          const isCustomLine = Boolean(item.isCustom || !existingProduct || !((existingProduct?._id ?? existingProduct?.id) || (typeof existingProduct === 'string' && !isManualItemId(existingProduct))));
+          const stockQty = Number(item.customStock ?? item.stock ?? item.quantity ?? 0);
+
+          const manualProduct = {
+            _id: `manual:edit:${index}`,
+            id: `manual:edit:${index}`,
+            name: customName,
+            isCustom: true,
+            inventory: { currentStock: stockQty, reorderPoint: 0 },
+            pricing: { retail: Number(item.unitPrice || item.price || 0), wholesale: Number(item.unitPrice || item.price || 0), cost: Number(item.unitCost ?? item.cost_price ?? 0) }
+          };
+
+          const productObj = isCustomLine
+            ? manualProduct
+            : (typeof existingProduct === 'string'
+              ? { _id: existingProduct, id: existingProduct, name: customName, inventory: { currentStock: stockQty || 999999, reorderPoint: 0 }, pricing: { retail: Number(item.unitPrice || item.price || 0), cost: Number(item.unitCost ?? item.cost_price ?? 0) } }
+              : existingProduct);
+
+          return {
+            product: productObj,
+            quantity: Number(item.quantity) || 1,
+            unitPrice: Number(item.unitPrice || item.price || (productObj?.pricing?.retail || 0)),
+            unitCost: Number(item.unitCost ?? item.cost_price ?? productObj?.pricing?.cost ?? 0),
+            isCustom: Boolean(isCustomLine),
+            customName: isCustomLine ? customName : undefined,
+            unit: item.unit || 'piece',
+            totalPrice: Number(item.totalPrice || (item.quantity * (item.unitPrice || item.price || (productObj?.pricing?.retail || 0))))
+          };
+        });
         setCart(formattedItems);
       }
 
@@ -1109,7 +1251,9 @@ export const Sales = ({ tabId, editData }) => {
     const fetchLastPurchasePrices = async () => {
       if (cart.length === 0) return;
 
-      const productIds = cart.map((item) => item?.product?._id ?? item?.product?.id).filter(Boolean);
+      const productIds = cart
+        .map((item) => item?.product?._id ?? item?.product?.id)
+        .filter((id) => isUuidV4(id));
       if (productIds.length === 0) return;
 
       try {
@@ -1138,7 +1282,7 @@ export const Sales = ({ tabId, editData }) => {
     if (!product) return;
 
     setCart(prevCart => {
-      // For variants, use variant _id; for products, use product _id
+      // For variants/products use DB id; manual items use synthetic manual: key
       const itemId = product._id ?? product.id;
       const existingItem = prevCart.find(c => (c.product?._id ?? c.product?.id) === itemId);
 
@@ -1160,7 +1304,16 @@ export const Sales = ({ tabId, editData }) => {
         const { boxes, pieces } = ppb ? piecesToBoxesAndPieces(newQty, ppb) : {};
         const updatedCart = prevCart.map(c =>
           (c.product?._id ?? c.product?.id) === itemId
-            ? { ...c, quantity: newQty, ...(ppb && { boxes, pieces }), unitPrice: item.unitPrice }
+            ? {
+              ...c,
+              quantity: newQty,
+              ...(ppb && { boxes, pieces }),
+              unitPrice: item.unitPrice,
+              unitCost: item.unitCost ?? c.unitCost,
+              unit: item.unit ?? c.unit,
+              isCustom: Boolean(item.isCustom || c.isCustom),
+              customName: item.customName || c.customName
+            }
             : c
         );
 
@@ -1169,9 +1322,9 @@ export const Sales = ({ tabId, editData }) => {
 
       // New item added - fetch its last purchase price (always, for loss alerts)
       // For variants, use base product ID to get purchase price
-      const productIdForPrice = product.isVariant
+      const productIdForPrice = product.isCustom ? null : (product.isVariant
         ? product.baseProductId
-        : (product._id ?? product.id);
+        : (product._id ?? product.id));
 
       if (productIdForPrice) {
         getLastPurchasePrice(productIdForPrice)
@@ -1191,7 +1344,13 @@ export const Sales = ({ tabId, editData }) => {
 
       // New item added - don't store in originalPrices since it wasn't there before
       // applying last prices, so there's nothing to restore
-      return [...prevCart, item];
+      return [...prevCart, {
+        ...item,
+        isCustom: Boolean(item.isCustom || product.isCustom),
+        customName: item.customName || product.name,
+        unitCost: item.unitCost ?? product?.pricing?.cost ?? 0,
+        unit: item.unit || 'piece'
+      }];
     });
   };
 
@@ -1202,11 +1361,11 @@ export const Sales = ({ tabId, editData }) => {
     }
 
     setCart(prevCart => {
-      const cartItem = prevCart.find(item => item.product._id === productId);
+      const cartItem = prevCart.find(item => (item.product._id ?? item.product.id) === productId);
       if (!cartItem) return prevCart;
 
-      const availableStock = cartItem.product.inventory?.currentStock || 0;
-      if (newQuantity > availableStock) {
+      const availableStock = cartItem.product.isCustom ? 999999 : (cartItem.product.inventory?.currentStock || 0);
+      if (!cartItem.product.isCustom && newQuantity > availableStock) {
         toast.error(`Cannot set quantity to ${newQuantity}. Only ${availableStock} units available in stock.`);
         return prevCart;
       }
@@ -1214,7 +1373,7 @@ export const Sales = ({ tabId, editData }) => {
       const ppb = getPiecesPerBox(cartItem.product);
       const { boxes, pieces } = ppb && dual ? dual : (ppb ? piecesToBoxesAndPieces(newQuantity, ppb) : {});
       return prevCart.map(item =>
-        item.product._id === productId
+        (item.product._id ?? item.product.id) === productId
           ? { ...item, quantity: newQuantity, ...(ppb && { boxes, pieces }) }
           : item
       );
@@ -1225,7 +1384,7 @@ export const Sales = ({ tabId, editData }) => {
     if (newPrice < 0) return;
 
     // Check if sale price is less than cost price (always check, regardless of showCostPrice)
-    const cartItem = cart.find(item => item.product._id === productId);
+    const cartItem = cart.find(item => (item.product._id ?? item.product.id) === productId);
     if (cartItem) {
       const costPrice = lastPurchasePrices[productId] !== undefined
         ? lastPurchasePrices[productId]
@@ -1246,7 +1405,7 @@ export const Sales = ({ tabId, editData }) => {
 
     setCart(prevCart =>
       prevCart.map(cartItem =>
-        cartItem.product._id === productId
+        (cartItem.product._id ?? cartItem.product.id) === productId
           ? { ...cartItem, unitPrice: newPrice }
           : cartItem
       )
@@ -1256,9 +1415,41 @@ export const Sales = ({ tabId, editData }) => {
     // not the prices after manual edits
   };
 
+  const updateUnitCost = (productId, newCost) => {
+    if (newCost < 0) return;
+    setCart(prevCart =>
+      prevCart.map(cartItem =>
+        (cartItem.product._id ?? cartItem.product.id) === productId
+          ? { ...cartItem, unitCost: newCost }
+          : cartItem
+      )
+    );
+  };
+
+  const updateCustomStock = (productId, newStock) => {
+    if (newStock < 1) return;
+    setCart(prevCart =>
+      prevCart.map((cartItem) => {
+        const currentId = cartItem.product._id ?? cartItem.product.id;
+        if (currentId !== productId || !cartItem.product?.isCustom) return cartItem;
+        return {
+          ...cartItem,
+          quantity: Math.min(cartItem.quantity, newStock),
+          product: {
+            ...cartItem.product,
+            inventory: {
+              ...(cartItem.product.inventory || {}),
+              currentStock: newStock
+            }
+          }
+        };
+      })
+    );
+  };
+
   const removeFromCart = (productId) => {
     setCart(prevCart => {
-      const newCart = prevCart.filter(item => item.product._id !== productId);
+      const newCart = prevCart.filter(item => (item.product._id ?? item.product.id) !== productId);
       // If cart becomes empty or if this was the last item with original price, reset states
       if (newCart.length === 0) {
         setOriginalPrices({});
@@ -1979,7 +2170,19 @@ export const Sales = ({ tabId, editData }) => {
       orderType: mapBusinessTypeToOrderType(selectedCustomer?.businessType),
       customer: selectedCustomer?._id,
       items: cart.map(item => {
-        const base = { product: item.product._id, quantity: Math.round(item.quantity), unitPrice: item.unitPrice };
+        const productId = item.product._id ?? item.product.id;
+        const base = {
+          quantity: Math.round(item.quantity),
+          unitPrice: item.unitPrice,
+          unitCost: item.unitCost ?? item.product?.pricing?.cost ?? 0
+        };
+        if (!isManualItemId(productId)) {
+          base.product = productId;
+        } else {
+          base.isCustom = true;
+          base.customName = item.customName || item.product?.name;
+          base.unit = item.unit || 'piece';
+        }
         if (item.boxes != null || item.pieces != null) {
           base.boxes = item.boxes;
           base.pieces = item.pieces;
@@ -2015,15 +2218,16 @@ export const Sales = ({ tabId, editData }) => {
         orderType: mapBusinessTypeToOrderType(selectedCustomer?.businessType),
         customer: selectedCustomer?._id,
         items: cart.map(item => {
+          const productId = item.product._id ?? item.product.id;
           const itemSubtotal = item.quantity * item.unitPrice;
           const itemDiscountAmount = 0; // Can be calculated if needed
           const itemTaxAmount = 0; // Can be calculated if needed
           const itemTotal = itemSubtotal - itemDiscountAmount + itemTaxAmount;
 
           const base = {
-            product: item.product._id,
             quantity: Math.round(item.quantity),
             unitPrice: item.unitPrice,
+            unitCost: item.unitCost ?? item.product?.pricing?.cost ?? 0,
             discountPercent: 0,
             taxRate: 0,
             subtotal: itemSubtotal,
@@ -2031,6 +2235,13 @@ export const Sales = ({ tabId, editData }) => {
             taxAmount: itemTaxAmount,
             total: itemTotal
           };
+          if (!isManualItemId(productId)) {
+            base.product = productId;
+          } else {
+            base.isCustom = true;
+            base.customName = item.customName || item.product?.name;
+            base.unit = item.unit || 'piece';
+          }
           if (item.boxes != null || item.pieces != null) {
             base.boxes = item.boxes;
             base.pieces = item.pieces;
@@ -2389,6 +2600,12 @@ export const Sales = ({ tabId, editData }) => {
               </div>
             ) : (
               <div className="space-y-4 border-t border-gray-200 pt-6">
+              {(() => {
+                const canViewCost = showCostPrice && hasPermission('view_cost_prices');
+                const hasCustomItems = cart.some((it) => Boolean(it?.product?.isCustom));
+                const showCostColumnInCart = canViewCost || hasCustomItems;
+                return (
+                  <>
                 <div className="flex items-center justify-between mb-4">
                   <h4 className="text-md font-medium text-gray-700">Cart Items</h4>
                   <div className="flex items-center space-x-3">
@@ -2428,7 +2645,7 @@ export const Sales = ({ tabId, editData }) => {
                   <div className="col-span-1">
                     <span className="text-xs font-semibold text-gray-600 uppercase">#</span>
                   </div>
-                  <div className={`${showCostPrice && hasPermission('view_cost_prices') ? 'col-span-5' : 'col-span-6'}`}>
+                  <div className={`${showCostColumnInCart ? 'col-span-5' : 'col-span-6'}`}>
                     <span className="text-xs font-semibold text-gray-600 uppercase">Product</span>
                   </div>
                   <div className="col-span-1">
@@ -2437,7 +2654,7 @@ export const Sales = ({ tabId, editData }) => {
                   <div className="col-span-1">
                     <span className="text-xs font-semibold text-gray-600 uppercase">Qty</span>
                   </div>
-                  {showCostPrice && hasPermission('view_cost_prices') && (
+                  {showCostColumnInCart && (
                     <div className="col-span-1">
                       <span className="text-xs font-semibold text-gray-600 uppercase">Cost</span>
                     </div>
@@ -2455,10 +2672,11 @@ export const Sales = ({ tabId, editData }) => {
 
                 {cart.map((item, index) => {
                   const totalPrice = item.unitPrice * item.quantity;
-                  const isLowStock = item.product.inventory?.currentStock <= item.product.inventory?.reorderPoint;
+                  const isLowStock = !item.product.isCustom && (item.product.inventory?.currentStock <= item.product.inventory?.reorderPoint);
+                  const cartItemId = item.product._id ?? item.product.id;
 
                   return (
-                    <div key={item.product._id}>
+                    <div key={cartItemId}>
                       {/* Mobile Card View */}
                       <div className="md:hidden mb-4 p-3 border border-gray-200 rounded-lg bg-white shadow-sm">
                         <div className="flex items-start justify-between mb-3">
@@ -2470,6 +2688,9 @@ export const Sales = ({ tabId, editData }) => {
                                   ? (item.product.displayName || item.product.variantName || item.product.name)
                                   : item.product.name}
                               </span>
+                              {item.product.isCustom && (
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-semibold">Custom</span>
+                              )}
                             </div>
                             {item.product.isVariant && (
                               <span className="text-xs text-gray-500 block">
@@ -2478,22 +2699,22 @@ export const Sales = ({ tabId, editData }) => {
                             )}
                             <div className="flex flex-wrap items-center gap-2 mt-1">
                               {isLowStock && <span className="text-yellow-600 text-xs">⚠️ Low Stock</span>}
-                              {lastPurchasePrices[item.product._id] !== undefined &&
-                                item.unitPrice < lastPurchasePrices[item.product._id] && (
+                              {lastPurchasePrices[cartItemId] !== undefined &&
+                                item.unitPrice < lastPurchasePrices[cartItemId] && (
                                   <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold">
                                     ⚠️ Loss
                                   </span>
                                 )}
-                              {isLastPricesApplied && priceStatus[item.product._id] && (
-                                <span className={`text-xs px-1.5 py-0.5 rounded ${priceStatus[item.product._id] === 'updated'
+                              {isLastPricesApplied && priceStatus[cartItemId] && (
+                                <span className={`text-xs px-1.5 py-0.5 rounded ${priceStatus[cartItemId] === 'updated'
                                   ? 'bg-green-100 text-green-700'
-                                  : priceStatus[item.product._id] === 'unchanged'
+                                  : priceStatus[cartItemId] === 'unchanged'
                                     ? 'bg-blue-100 text-blue-700'
                                     : 'bg-yellow-100 text-yellow-700'
                                   }`}>
-                                  {priceStatus[item.product._id] === 'updated'
+                                  {priceStatus[cartItemId] === 'updated'
                                     ? 'Updated'
-                                    : priceStatus[item.product._id] === 'unchanged'
+                                    : priceStatus[cartItemId] === 'unchanged'
                                       ? 'Same Price'
                                       : 'Not in Last Order'}
                                 </span>
@@ -2501,8 +2722,8 @@ export const Sales = ({ tabId, editData }) => {
                             </div>
                           </div>
                           <LoadingButton
-                            onClick={() => removeFromCart(item.product._id)}
-                            isLoading={isRemovingFromCart[item.product._id]}
+                            onClick={() => removeFromCart(cartItemId)}
+                            isLoading={isRemovingFromCart[cartItemId]}
                             variant="destructive"
                             size="sm"
                             className="h-8 w-8 p-0 flex-shrink-0 ml-2"
@@ -2514,14 +2735,26 @@ export const Sales = ({ tabId, editData }) => {
                         <div className="grid grid-cols-2 gap-3">
                           <div>
                             <label className="block text-xs font-medium text-gray-500 mb-1">Stock</label>
-                            <span className={`text-sm font-semibold px-2 py-1 rounded border block text-center ${(item.product.inventory?.currentStock || 0) === 0
-                              ? 'text-red-700 bg-red-50 border-red-200'
-                              : (item.product.inventory?.currentStock || 0) <= (item.product.inventory?.reorderPoint || 0)
-                                ? 'text-yellow-700 bg-yellow-50 border-yellow-200'
-                                : 'text-gray-700 bg-gray-100 border-gray-200'
-                              }`}>
-                              {item.product.inventory?.currentStock || 0}
-                            </span>
+                            {item.product.isCustom ? (
+                              <Input
+                                type="number"
+                                step="1"
+                                autoComplete="off"
+                                value={Math.round(item.product.inventory?.currentStock || 0)}
+                                onChange={(e) => updateCustomStock(cartItemId, parseInt(e.target.value) || 1)}
+                                className="text-center h-8 w-full"
+                                min="1"
+                              />
+                            ) : (
+                              <span className={`text-sm font-semibold px-2 py-1 rounded border block text-center ${(item.product.inventory?.currentStock || 0) === 0
+                                ? 'text-red-700 bg-red-50 border-red-200'
+                                : (item.product.inventory?.currentStock || 0) <= (item.product.inventory?.reorderPoint || 0)
+                                  ? 'text-yellow-700 bg-yellow-50 border-yellow-200'
+                                  : 'text-gray-700 bg-gray-100 border-gray-200'
+                                }`}>
+                                {item.product.inventory?.currentStock || 0}
+                              </span>
+                            )}
                           </div>
                           <div>
                             <label className="block text-xs font-medium text-gray-500 mb-1">Total</label>
@@ -2534,7 +2767,7 @@ export const Sales = ({ tabId, editData }) => {
                             <DualUnitQuantityInput
                               product={item.product}
                               quantity={item.quantity}
-                              onChange={(q, dual) => updateQuantity(item.product._id, q, dual)}
+                              onChange={(q, dual) => updateQuantity(cartItemId, q, dual)}
                               min={1}
                               max={item.product.inventory?.currentStock || 999999}
                               stockPiecesForRemaining={item.product.inventory?.currentStock ?? 0}
@@ -2552,25 +2785,37 @@ export const Sales = ({ tabId, editData }) => {
                               step="1"
                               autoComplete="off"
                               value={Math.round(item.unitPrice)}
-                              onChange={(e) => updateUnitPrice(item.product._id, parseInt(e.target.value) || 0)}
-                              className={`text-center h-8 w-full ${(lastPurchasePrices[item.product._id] !== undefined &&
-                                item.unitPrice < lastPurchasePrices[item.product._id])
+                              onChange={(e) => updateUnitPrice(cartItemId, parseInt(e.target.value) || 0)}
+                              className={`text-center h-8 w-full ${(lastPurchasePrices[cartItemId] !== undefined &&
+                                item.unitPrice < lastPurchasePrices[cartItemId])
                                 ? 'bg-red-50 border-red-400 ring-2 ring-red-300'
                                 : ''
                                 }`}
                               min="0"
                             />
                           </div>
-                          {showCostPrice && hasPermission('view_cost_prices') && (
+                          {showCostColumnInCart ? (
                             <div className="col-span-2">
                               <label className="block text-xs font-medium text-gray-500 mb-1">Cost</label>
-                              <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center">
-                                {lastPurchasePrices[item.product._id] !== undefined
-                                  ? `${Math.round(lastPurchasePrices[item.product._id])}`
-                                  : 'N/A'}
-                              </span>
+                              {item.product.isCustom ? (
+                                <Input
+                                  type="number"
+                                  step="1"
+                                  autoComplete="off"
+                                  value={Math.round(item.unitCost || 0)}
+                                  onChange={(e) => updateUnitCost(cartItemId, parseInt(e.target.value) || 0)}
+                                  className="text-center h-8 w-full"
+                                  min="0"
+                                />
+                              ) : (
+                                <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center">
+                                  {lastPurchasePrices[cartItemId] !== undefined
+                                    ? `${Math.round(lastPurchasePrices[cartItemId])}`
+                                    : 'N/A'}
+                                </span>
+                              )}
                             </div>
-                          )}
+                          ) : null}
                         </div>
                       </div>
 
@@ -2585,30 +2830,31 @@ export const Sales = ({ tabId, editData }) => {
                           </div>
 
                           {/* Product Name - mirror Sales Order layout (6 columns normally, 5 when cost column shown) */}
-                          <div className={`${showCostPrice && hasPermission('view_cost_prices') ? 'col-span-5' : 'col-span-6'} flex items-center h-8`}>
+                          <div className={`${showCostColumnInCart ? 'col-span-5' : 'col-span-6'} flex items-center h-8`}>
                             <div className="flex flex-col">
                               <span className="font-medium text-sm truncate">
                                 {item.product.isVariant
                                   ? (item.product.displayName || item.product.variantName || item.product.name)
                                   : item.product.name}
+                                {item.product.isCustom && <span className="text-xs ml-2 px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-semibold">Custom</span>}
                                 {isLowStock && <span className="text-yellow-600 text-xs ml-2">⚠️ Low Stock</span>}
                                 {/* Warning if sale price is below cost price (always show, regardless of showCostPrice) */}
-                                {lastPurchasePrices[item.product._id] !== undefined &&
-                                  item.unitPrice < lastPurchasePrices[item.product._id] && (
-                                    <span className="text-xs ml-2 px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold" title={`Sale price below cost! Loss: ${Math.round(lastPurchasePrices[item.product._id] - item.unitPrice)} per unit`}>
+                                {lastPurchasePrices[cartItemId] !== undefined &&
+                                  item.unitPrice < lastPurchasePrices[cartItemId] && (
+                                    <span className="text-xs ml-2 px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold" title={`Sale price below cost! Loss: ${Math.round(lastPurchasePrices[cartItemId] - item.unitPrice)} per unit`}>
                                       ⚠️ Loss
                                     </span>
                                   )}
-                                {isLastPricesApplied && priceStatus[item.product._id] && (
-                                  <span className={`text-xs ml-2 px-1.5 py-0.5 rounded ${priceStatus[item.product._id] === 'updated'
+                                {isLastPricesApplied && priceStatus[cartItemId] && (
+                                  <span className={`text-xs ml-2 px-1.5 py-0.5 rounded ${priceStatus[cartItemId] === 'updated'
                                     ? 'bg-green-100 text-green-700'
-                                    : priceStatus[item.product._id] === 'unchanged'
+                                    : priceStatus[cartItemId] === 'unchanged'
                                       ? 'bg-blue-100 text-blue-700'
                                       : 'bg-yellow-100 text-yellow-700'
                                     }`}>
-                                    {priceStatus[item.product._id] === 'updated'
+                                    {priceStatus[cartItemId] === 'updated'
                                       ? 'Updated'
-                                      : priceStatus[item.product._id] === 'unchanged'
+                                      : priceStatus[cartItemId] === 'unchanged'
                                         ? 'Same Price'
                                         : 'Not in Last Order'}
                                   </span>
@@ -2624,14 +2870,26 @@ export const Sales = ({ tabId, editData }) => {
 
                           {/* Stock - 1 column */}
                           <div className="col-span-1">
-                            <span className={`text-sm font-semibold px-2 py-1 rounded border block text-center h-8 flex items-center justify-center ${(item.product.inventory?.currentStock || 0) === 0
-                              ? 'text-red-700 bg-red-50 border-red-200'
-                              : (item.product.inventory?.currentStock || 0) <= (item.product.inventory?.reorderPoint || 0)
-                                ? 'text-yellow-700 bg-yellow-50 border-yellow-200'
-                                : 'text-gray-700 bg-gray-100 border-gray-200'
-                              }`}>
-                              {item.product.inventory?.currentStock || 0}
-                            </span>
+                            {item.product.isCustom ? (
+                              <Input
+                                type="number"
+                                step="1"
+                                autoComplete="off"
+                                value={Math.round(item.product.inventory?.currentStock || 0)}
+                                onChange={(e) => updateCustomStock(cartItemId, parseInt(e.target.value) || 1)}
+                                className="text-center h-8 w-full"
+                                min="1"
+                              />
+                            ) : (
+                              <span className={`text-sm font-semibold px-2 py-1 rounded border block text-center h-8 flex items-center justify-center ${(item.product.inventory?.currentStock || 0) === 0
+                                ? 'text-red-700 bg-red-50 border-red-200'
+                                : (item.product.inventory?.currentStock || 0) <= (item.product.inventory?.reorderPoint || 0)
+                                  ? 'text-yellow-700 bg-yellow-50 border-yellow-200'
+                                  : 'text-gray-700 bg-gray-100 border-gray-200'
+                                }`}>
+                                {item.product.inventory?.currentStock || 0}
+                              </span>
+                            )}
                           </div>
 
                           {/* Quantity - 1 or 2 columns for dual unit */}
@@ -2639,7 +2897,7 @@ export const Sales = ({ tabId, editData }) => {
                             <DualUnitQuantityInput
                               product={item.product}
                               quantity={item.quantity}
-                              onChange={(q, dual) => updateQuantity(item.product._id, q, dual)}
+                              onChange={(q, dual) => updateQuantity(cartItemId, q, dual)}
                               min={1}
                               max={item.product.inventory?.currentStock || 999999}
                               stockPiecesForRemaining={item.product.inventory?.currentStock ?? 0}
@@ -2652,24 +2910,38 @@ export const Sales = ({ tabId, editData }) => {
                           </div>
 
                           {/* Purchase Price (Cost) - 1 column (conditional) - Between Quantity and Rate */}
-                          {showCostPrice && hasPermission('view_cost_prices') && (
+                          {showCostColumnInCart ? (
                             <div className="col-span-1">
-                              <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center h-8 flex items-center justify-center" title="Cost Price">
-                                {lastPurchasePrices[item.product._id] !== undefined
-                                  ? `${Math.round(lastPurchasePrices[item.product._id])}`
-                                  : item.product.pricing?.cost !== undefined
-                                    ? `${Math.round(item.product.pricing.cost)}`
-                                    : 'N/A'}
-                              </span>
+                              {item.product.isCustom ? (
+                                <Input
+                                  type="number"
+                                  step="1"
+                                  autoComplete="off"
+                                  value={Math.round(item.unitCost || 0)}
+                                  onChange={(e) => updateUnitCost(cartItemId, parseInt(e.target.value) || 0)}
+                                  className="text-center h-8 w-full"
+                                  min="0"
+                                />
+                              ) : (
+                                <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center h-8 flex items-center justify-center" title="Cost Price">
+                                  {lastPurchasePrices[cartItemId] !== undefined
+                                    ? `${Math.round(lastPurchasePrices[cartItemId])}`
+                                    : item.product.pricing?.cost !== undefined
+                                      ? `${Math.round(item.product.pricing.cost)}`
+                                      : 'N/A'}
+                                </span>
+                              )}
                             </div>
-                          )}
+                          ) : null}
 
                           {/* Rate - 1 column */}
                           <div className="col-span-1 relative">
                             {(() => {
-                              const effectiveCost = lastPurchasePrices[item.product._id] !== undefined
-                                ? lastPurchasePrices[item.product._id]
-                                : item.product.pricing?.cost;
+                              const effectiveCost = item.product.isCustom
+                                ? (item.unitCost ?? item.product.pricing?.cost)
+                                : (lastPurchasePrices[cartItemId] !== undefined
+                                  ? lastPurchasePrices[cartItemId]
+                                  : item.product.pricing?.cost);
                               const isBelowCost = effectiveCost !== undefined && effectiveCost !== null && item.unitPrice < effectiveCost;
 
                               return (
@@ -2678,16 +2950,16 @@ export const Sales = ({ tabId, editData }) => {
                                   step="1"
                                   autoComplete="off"
                                   value={Math.round(item.unitPrice)}
-                                  onChange={(e) => updateUnitPrice(item.product._id, parseInt(e.target.value) || 0)}
+                                  onChange={(e) => updateUnitPrice(cartItemId, parseInt(e.target.value) || 0)}
                                   className={`text-center h-8 ${
                                     // Check if sale price is less than cost price - highest priority styling (always check)
                                     isBelowCost
                                       ? 'bg-red-50 border-red-400 ring-2 ring-red-300'
-                                      : priceStatus[item.product._id] === 'updated'
+                                      : priceStatus[cartItemId] === 'updated'
                                         ? 'bg-green-50 border-green-300 ring-1 ring-green-200'
-                                        : priceStatus[item.product._id] === 'not-found'
+                                        : priceStatus[cartItemId] === 'not-found'
                                           ? 'bg-yellow-50 border-yellow-300 ring-1 ring-yellow-200'
-                                          : priceStatus[item.product._id] === 'unchanged'
+                                          : priceStatus[cartItemId] === 'unchanged'
                                             ? 'bg-blue-50 border-blue-300 ring-1 ring-blue-200'
                                             : ''
                                     }`}
@@ -2700,24 +2972,24 @@ export const Sales = ({ tabId, editData }) => {
                                 />
                               );
                             })()}
-                            {isLastPricesApplied && priceStatus[item.product._id] && (
+                            {isLastPricesApplied && priceStatus[cartItemId] && (
                               <div
                                 className="absolute -right-7 top-1/2 transform -translate-y-1/2 flex items-center z-10"
                                 title={
-                                  priceStatus[item.product._id] === 'updated'
+                                  priceStatus[cartItemId] === 'updated'
                                     ? 'Price updated from last order'
-                                    : priceStatus[item.product._id] === 'unchanged'
+                                    : priceStatus[cartItemId] === 'unchanged'
                                       ? 'Price same as last order'
                                       : 'Product not found in previous order'
                                 }
                               >
-                                {priceStatus[item.product._id] === 'updated' && (
+                                {priceStatus[cartItemId] === 'updated' && (
                                   <CheckCircle className="h-4 w-4 text-green-600 bg-white rounded-full" />
                                 )}
-                                {priceStatus[item.product._id] === 'unchanged' && (
+                                {priceStatus[cartItemId] === 'unchanged' && (
                                   <Info className="h-4 w-4 text-blue-600 bg-white rounded-full" />
                                 )}
-                                {priceStatus[item.product._id] === 'not-found' && (
+                                {priceStatus[cartItemId] === 'not-found' && (
                                   <AlertCircle className="h-4 w-4 text-yellow-600 bg-white rounded-full" />
                                 )}
                               </div>
@@ -2734,8 +3006,8 @@ export const Sales = ({ tabId, editData }) => {
                           {/* Delete Button - 1 column */}
                           <div className="col-span-1">
                             <LoadingButton
-                              onClick={() => removeFromCart(item.product._id)}
-                              isLoading={isRemovingFromCart[item.product._id]}
+                              onClick={() => removeFromCart(cartItemId)}
+                              isLoading={isRemovingFromCart[cartItemId]}
                               variant="destructive"
                               size="sm"
                               className="h-8 w-full"
@@ -2747,7 +3019,10 @@ export const Sales = ({ tabId, editData }) => {
                       </div>
                     </div>
                   );
-                })}
+              })}
+                  </>
+                );
+              })()}
               </div>
             )}
           </div>
@@ -3449,8 +3724,13 @@ export const Sales = ({ tabId, editData }) => {
               algorithm="frequently_bought"
               context={{
                 page: 'sales',
-                currentProduct: cart[0]?.product?._id ?? cart[0]?.product?.id,
-                currentProducts: cart.map((item) => item?.product?._id ?? item?.product?.id).filter(Boolean),
+                currentProduct: (() => {
+                  const id = cart[0]?.product?._id ?? cart[0]?.product?.id;
+                  return isUuidV4(id) ? id : undefined;
+                })(),
+                currentProducts: cart
+                  .map((item) => item?.product?._id ?? item?.product?.id)
+                  .filter((id) => isUuidV4(id)),
                 customerTier: selectedCustomer?.customerTier,
                 businessType: selectedCustomer?.businessType,
                 limit: 4,
@@ -3508,7 +3788,7 @@ export const Sales = ({ tabId, editData }) => {
         documentTitle="Sale Invoice"
         partyLabel="Customer"
         onExportExcel={exportExcel}
-        onDownloadFile={downloadFile}
+        onDownloadFile={downloadExportFile}
       />
 
       {/* Export Format Selection Modal */}
