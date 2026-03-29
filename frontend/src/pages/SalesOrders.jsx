@@ -2054,7 +2054,7 @@ const SalesOrders = ({ tabId }) => {
             loading={customersLoading}
             emptyMessage={customerSearchTerm.length > 0 ? "No customers found" : "Start typing to search customers..."}
             value={customerSearchTerm}
-            rightContentKey="city"
+            rightContentKey="country"
           />
         </div>
 

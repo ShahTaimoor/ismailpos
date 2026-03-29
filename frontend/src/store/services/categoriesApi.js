@@ -125,6 +125,7 @@ export const {
   useExportCategoriesMutation,
   useImportCategoriesMutation,
   useDownloadCategoryTemplateQuery,
+  useLazyDownloadCategoryTemplateQuery,
   useLazyDownloadCategoryExportFileQuery,
 } = categoriesApi;
 

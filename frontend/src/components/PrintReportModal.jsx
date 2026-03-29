@@ -126,7 +126,7 @@ const PrintReportModal = ({
                 <span className="font-semibold">Period:</span> {filters?.dateFrom || 'All Time'} to {filters?.dateTo || 'Present'}
               </div>
               <div>
-                <span className="font-semibold">City:</span> {filters?.city || 'All Cities'}
+                <span className="font-semibold">Country:</span> {filters?.city || 'All Countries'}
               </div>
               <div>
                 <span className="font-semibold">Printed:</span> {new Date().toLocaleString()}

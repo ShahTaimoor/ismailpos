@@ -11,7 +11,7 @@ import {
 import {
   useExportExcelMutation,
   useImportExcelMutation,
-  useDownloadTemplateQuery,
+  useLazyDownloadTemplateQuery,
   useLazyDownloadExportFileQuery,
 } from '../store/services/suppliersApi';
 import { LoadingButton } from './LoadingSpinner';
@@ -27,7 +27,8 @@ const SupplierImportExport = ({ onImportComplete, filters = {} }) => {
   
   const [exportExcel, { isLoading: isExporting }] = useExportExcelMutation();
   const [importExcel, { isLoading: isImporting }] = useImportExcelMutation();
-  const { refetch: downloadTemplate } = useDownloadTemplateQuery(undefined, { skip: true });
+  const [triggerDownloadTemplate, { isFetching: isTemplateDownloading }] =
+    useLazyDownloadTemplateQuery();
   const [downloadExportFile] = useLazyDownloadExportFileQuery();
 
   const handleExportExcel = async () => {
@@ -113,12 +114,13 @@ const SupplierImportExport = ({ onImportComplete, filters = {} }) => {
 
   const handleDownloadTemplate = async () => {
     try {
-      const response = await downloadTemplate();
-      
-      // Create blob and download
-      const blob = response.data instanceof Blob ? response.data : new Blob([response.data], { 
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
-      });
+      const raw = await triggerDownloadTemplate().unwrap();
+      const blob =
+        raw instanceof Blob
+          ? raw
+          : new Blob([raw], {
+              type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            });
       const link = document.createElement('a');
       const url = URL.createObjectURL(blob);
       link.setAttribute('href', url);
@@ -147,15 +149,16 @@ const SupplierImportExport = ({ onImportComplete, filters = {} }) => {
         <h3 className="text-base sm:text-lg font-semibold text-gray-900">Import / Export Suppliers</h3>
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3 w-full sm:w-auto">
           <div className="relative group">
-            <Button
+            <LoadingButton
               onClick={handleDownloadTemplate}
+              isLoading={isTemplateDownloading}
               variant="outline"
               size="default"
               className="flex items-center justify-center gap-2 w-full sm:w-auto"
             >
               <Download className="h-4 w-4" />
               Template
-            </Button>
+            </LoadingButton>
             <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 text-white text-sm rounded-lg opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-10">
               <div className="text-xs space-y-1">
                 <div>• Download Excel template file</div>

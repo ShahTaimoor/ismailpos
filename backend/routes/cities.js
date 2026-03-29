@@ -48,9 +48,9 @@ router.post('/import/excel', [
         
         // Map Excel columns to our format
         const cityData = {
-          name: row['Name'] || row['name'] || row['City Name'] || row['city name'] || row.name,
+          name: row['Country name'] || row['country name'] || row['Name'] || row['name'] || row['City Name'] || row['city name'] || row.name,
           state: row['State'] || row['state'] || row.state || '',
-          country: row['Country'] || row['country'] || row.country || 'US',
+          country: row['Listed country'] || row['listed country'] || row['Country'] || row['country'] || row.country || 'US',
           description: row['Description'] || row['description'] || row.description || '',
           isActive: row['Status'] || row['status'] ? (row['Status'] || row['status']).toString().toLowerCase() === 'active' : true
         };
@@ -59,7 +59,7 @@ router.post('/import/excel', [
         if (!cityData.name) {
           results.errors.push({
             row: i + 2,
-            error: 'Missing required field: City Name is required'
+            error: 'Missing required field: Country name is required'
           });
           continue;
         }
@@ -70,7 +70,7 @@ router.post('/import/excel', [
         if (cityExists) {
           results.errors.push({
             row: i + 2,
-            error: `City already exists with name: ${cityData.name}`
+            error: `Country already exists with name: ${cityData.name}`
           });
           continue;
         }
@@ -124,9 +124,9 @@ router.post('/export/excel', [auth, requirePermission('view_reports')], async (r
     
     // Prepare Excel data
     const excelData = cities.map(city => ({
-      'Name': city.name,
+      'Country name': city.name,
       'State': city.state || '',
-      'Country': city.country || '',
+      'Listed country': city.country || '',
       'Description': city.description || '',
       'Status': city.isActive ? 'active' : 'inactive'
     }));
@@ -137,28 +137,28 @@ router.post('/export/excel', [auth, requirePermission('view_reports')], async (r
     
     // Set column widths
     const columnWidths = [
-      { wch: 25 }, // Name
+      { wch: 25 }, // Country name
       { wch: 20 }, // State
-      { wch: 15 }, // Country
+      { wch: 18 }, // Listed country
       { wch: 40 }, // Description
       { wch: 12 }  // Status
     ];
     worksheet['!cols'] = columnWidths;
     
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Cities');
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Countries');
     
     // Ensure exports directory exists
     if (!fs.existsSync('exports')) {
       fs.mkdirSync('exports');
     }
     
-    const filename = `cities_${Date.now()}.xlsx`;
+    const filename = `countries_${Date.now()}.xlsx`;
     const filepath = path.join('exports', filename);
     XLSX.writeFile(workbook, filepath);
     
     res.json({
       success: true,
-      message: 'Cities exported successfully',
+      message: 'Countries exported successfully',
       filename: filename,
       recordCount: excelData.length,
       downloadUrl: `/api/cities/download/${filename}`
@@ -200,17 +200,17 @@ router.get('/template/excel', [auth, requirePermission('manage_users')], (req, r
   try {
     const templateData = [
       {
-        'Name': 'New York',
-        'State': 'NY',
-        'Country': 'USA',
-        'Description': 'The Big Apple',
+        'Country name': 'Pakistan',
+        'State': 'Punjab',
+        'Listed country': 'Pakistan',
+        'Description': 'Example row',
         'Status': 'active'
       },
       {
-        'Name': 'London',
-        'State': 'Greater London',
-        'Country': 'UK',
-        'Description': 'Capital of UK',
+        'Country name': 'China',
+        'State': 'Guangdong',
+        'Listed country': 'China',
+        'Description': 'Example row',
         'Status': 'active'
       }
     ];
@@ -233,7 +233,7 @@ router.get('/template/excel', [auth, requirePermission('manage_users')], (req, r
       fs.mkdirSync('exports');
     }
     
-    const filename = 'city_import_template.xlsx';
+    const filename = 'country_import_template.xlsx';
     const filepath = path.join('exports', filename);
     XLSX.writeFile(workbook, filepath);
     

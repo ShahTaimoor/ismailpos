@@ -11,7 +11,7 @@ import {
 import {
   useExportCategoriesMutation,
   useImportCategoriesMutation,
-  useDownloadCategoryTemplateQuery,
+  useLazyDownloadCategoryTemplateQuery,
   useLazyDownloadCategoryExportFileQuery,
 } from '../store/services/categoriesApi';
 import { Button } from '@/components/ui/button';
@@ -27,7 +27,8 @@ const CategoryImportExport = ({ onImportComplete, filters = {} }) => {
   
   const [exportExcel, { isLoading: isExporting }] = useExportCategoriesMutation();
   const [importExcel, { isLoading: isImporting }] = useImportCategoriesMutation();
-  const { refetch: downloadTemplate } = useDownloadCategoryTemplateQuery(undefined, { skip: true });
+  const [triggerDownloadTemplate, { isFetching: isTemplateDownloading }] =
+    useLazyDownloadCategoryTemplateQuery();
   const [downloadExportFile] = useLazyDownloadCategoryExportFileQuery();
 
   const handleExportExcel = async () => {
@@ -110,11 +111,13 @@ const CategoryImportExport = ({ onImportComplete, filters = {} }) => {
 
   const handleDownloadTemplate = async () => {
     try {
-      const response = await downloadTemplate();
-      
-      const blob = response.data instanceof Blob ? response.data : new Blob([response.data], { 
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
-      });
+      const raw = await triggerDownloadTemplate().unwrap();
+      const blob =
+        raw instanceof Blob
+          ? raw
+          : new Blob([raw], {
+              type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            });
       const link = document.createElement('a');
       const url = URL.createObjectURL(blob);
       link.setAttribute('href', url);
@@ -143,15 +146,16 @@ const CategoryImportExport = ({ onImportComplete, filters = {} }) => {
         <h3 className="text-base sm:text-lg font-semibold text-gray-900">Import / Export Categories</h3>
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3 w-full sm:w-auto">
           <div className="relative group">
-            <Button
+            <LoadingButton
               onClick={handleDownloadTemplate}
+              isLoading={isTemplateDownloading}
               variant="outline"
               size="default"
               className="flex items-center justify-center gap-2 w-full sm:w-auto"
             >
               <Download className="h-4 w-4" />
               Template
-            </Button>
+            </LoadingButton>
           </div>
           <div className="relative group">
             <LoadingButton

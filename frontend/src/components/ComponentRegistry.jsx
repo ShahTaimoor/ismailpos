@@ -175,7 +175,7 @@ export const componentRegistry = {
     allowMultiple: true
   },
   '/cities': {
-    title: 'Cities',
+    title: 'Countries',
     icon: 'MapPin'
   },
   '/settings': {

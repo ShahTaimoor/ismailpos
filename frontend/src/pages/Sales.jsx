@@ -2379,7 +2379,7 @@ export const Sales = ({ tabId, editData }) => {
               onSelect={handleCustomerSelect}
               onSearch={setCustomerSearchTerm}
               selectedItem={selectedCustomer}
-              rightContentKey="city"
+              rightContentKey="country"
               displayKey={(customer) => {
                 const name = customer?.displayName ?? customer?.display_name ?? customer?.businessName ?? customer?.business_name ?? customer?.name ?? 'Customer';
                 const totalBalance = customer?.currentBalance !== undefined && customer?.currentBalance !== null

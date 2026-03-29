@@ -163,7 +163,7 @@ export const suppliersApi = api.injectEndpoints({
     }),
     downloadTemplate: builder.query({
       query: () => ({
-        url: 'suppliers/export/template',
+        url: 'suppliers/template/excel',
         method: 'get',
         responseType: 'blob',
       }),
@@ -197,6 +197,7 @@ export const {
   useExportExcelMutation,
   useImportExcelMutation,
   useDownloadTemplateQuery,
+  useLazyDownloadTemplateQuery,
   useLazyDownloadExportFileQuery,
 } = suppliersApi;
 

@@ -196,7 +196,7 @@ export const componentRegistry = {
     component: () => import('../pages/BankReceipts').then(m => m.default || m.BankReceipts)
   },
   '/cities': {
-    title: 'Cities',
+    title: 'Countries',
     icon: 'MapPin',
     component: () => import('../pages/Cities').then(m => m.default || m.Cities)
   },

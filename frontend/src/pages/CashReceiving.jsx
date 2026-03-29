@@ -114,7 +114,7 @@ const CashReceiving = () => {
   // Load customers by selected cities
   const loadCustomers = async () => {
     if (selectedCities.length === 0) {
-      showErrorToast('Please select at least one city');
+      showErrorToast('Please select at least one country');
       return;
     }
 
@@ -325,7 +325,7 @@ const CashReceiving = () => {
   // Handle print customer list
   const handlePrintCustomerList = () => {
     if (customerEntries.length === 0) {
-      showErrorToast('No customers loaded. Please select a city and click Load first.');
+      showErrorToast('No customers loaded. Please select a country and click Load first.');
       return;
     }
 
@@ -424,7 +424,7 @@ const CashReceiving = () => {
       month: 'short',
       year: 'numeric'
     });
-    const selectedCitiesText = selectedCities.length > 0 ? selectedCities.join(', ') : 'All Cities';
+    const selectedCitiesText = selectedCities.length > 0 ? selectedCities.join(', ') : 'All Countries';
 
     printWindow.document.write(`
       <!DOCTYPE html>
@@ -526,7 +526,7 @@ const CashReceiving = () => {
               <span>${printDate}</span>
             </div>
             <div class="info-row">
-              <span class="info-label">Cities:</span>
+              <span class="info-label">Countries:</span>
               <span>${selectedCitiesText}</span>
             </div>
             <div class="info-row">
@@ -545,7 +545,7 @@ const CashReceiving = () => {
                 <th style="width: 5%;">#</th>
                 <th style="width: 30%;">Customer Name</th>
                 <th style="width: 20%;">Contact Number</th>
-                <th style="width: 20%;">City</th>
+                <th style="width: 20%;">Country</th>
                 <th style="width: 25%;" class="text-right">Current Balance</th>
               </tr>
             </thead>
@@ -763,7 +763,7 @@ const CashReceiving = () => {
           {/* Right Panel - City Selection */}
           <div>
             <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
-              Select Cities
+              Select Countries
             </label>
             {/* Search Input */}
             <div className="relative mb-2">
@@ -771,7 +771,7 @@ const CashReceiving = () => {
                 type="text"
                 value={citySearchTerm}
                 onChange={(e) => setCitySearchTerm(e.target.value)}
-                placeholder="Search cities..."
+                placeholder="Search countries..."
                 className="w-full px-3 py-2 pl-10 text-sm sm:text-base border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -780,10 +780,10 @@ const CashReceiving = () => {
               {citiesLoading ? (
                 <div className="p-4 text-center text-gray-500">
                   <Loader2 className="h-5 w-5 animate-spin mx-auto mb-2" />
-                  Loading cities...
+                  Loading countries...
                 </div>
               ) : cities.length === 0 ? (
-                <div className="p-4 text-center text-gray-500">No cities available</div>
+                <div className="p-4 text-center text-gray-500">No countries available</div>
               ) : (() => {
                 // Filter cities based on search term
                 const filteredCities = cities.filter(city =>
@@ -791,7 +791,7 @@ const CashReceiving = () => {
                 );
                 
                 return filteredCities.length === 0 ? (
-                  <div className="p-4 text-center text-gray-500">No cities found matching "{citySearchTerm}"</div>
+                  <div className="p-4 text-center text-gray-500">No countries found matching "{citySearchTerm}"</div>
                 ) : (
                   <div className="p-2">
                     {filteredCities.map((city) => (

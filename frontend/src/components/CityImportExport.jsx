@@ -11,7 +11,7 @@ import {
 import {
   useExportCitiesMutation,
   useImportCitiesMutation,
-  useDownloadCityTemplateQuery,
+  useLazyDownloadCityTemplateQuery,
   useLazyDownloadCityExportFileQuery,
 } from '../store/services/citiesApi';
 import { Button } from '@/components/ui/button';
@@ -26,7 +26,8 @@ const CityImportExport = ({ onImportComplete, filters = {} }) => {
   
   const [exportExcel, { isLoading: isExporting }] = useExportCitiesMutation();
   const [importExcel, { isLoading: isImporting }] = useImportCitiesMutation();
-  const { refetch: downloadTemplate } = useDownloadCityTemplateQuery(undefined, { skip: true });
+  const [triggerDownloadTemplate, { isFetching: isTemplateDownloading }] =
+    useLazyDownloadCityTemplateQuery();
   const [downloadExportFile] = useLazyDownloadCityExportFileQuery();
 
   const handleExportExcel = async () => {
@@ -49,7 +50,7 @@ const CityImportExport = ({ onImportComplete, filters = {} }) => {
         URL.revokeObjectURL(url);
       }
       
-      showSuccessToast(`Exported ${response.recordCount || 0} cities to Excel`);
+      showSuccessToast(`Exported ${response.recordCount || 0} countries to Excel`);
     } catch (error) {
       handleApiError(error, 'Excel Export');
     }
@@ -99,25 +100,27 @@ const CityImportExport = ({ onImportComplete, filters = {} }) => {
       
       const errors = response?.results?.errors || response?.errors || [];
       if (errors.length > 0) {
-        showWarningToast(`${errors.length} cities failed to import`);
+        showWarningToast(`${errors.length} countries failed to import`);
       }
       
     } catch (error) {
-      handleApiError(error, 'City Import');
+      handleApiError(error, 'Country Import');
     }
   };
 
   const handleDownloadTemplate = async () => {
     try {
-      const response = await downloadTemplate();
-      
-      const blob = response.data instanceof Blob ? response.data : new Blob([response.data], { 
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
-      });
+      const raw = await triggerDownloadTemplate().unwrap();
+      const blob =
+        raw instanceof Blob
+          ? raw
+          : new Blob([raw], {
+              type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            });
       const link = document.createElement('a');
       const url = URL.createObjectURL(blob);
       link.setAttribute('href', url);
-      link.setAttribute('download', 'city_template.xlsx');
+      link.setAttribute('download', 'country_template.xlsx');
       link.style.visibility = 'hidden';
       document.body.appendChild(link);
       link.click();
@@ -139,18 +142,19 @@ const CityImportExport = ({ onImportComplete, filters = {} }) => {
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0 mb-3">
-        <h3 className="text-base sm:text-lg font-semibold text-gray-900">Import / Export Cities</h3>
+        <h3 className="text-base sm:text-lg font-semibold text-gray-900">Import / Export Countries</h3>
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3 w-full sm:w-auto">
           <div className="relative group">
-            <Button
+            <LoadingButton
               onClick={handleDownloadTemplate}
+              isLoading={isTemplateDownloading}
               variant="outline"
               size="default"
               className="flex items-center justify-center gap-2 w-full sm:w-auto"
             >
               <Download className="h-4 w-4" />
               Template
-            </Button>
+            </LoadingButton>
           </div>
           <div className="relative group">
             <LoadingButton
@@ -172,7 +176,7 @@ const CityImportExport = ({ onImportComplete, filters = {} }) => {
               className="flex items-center justify-center gap-2 w-full sm:w-auto"
             >
               <Upload className="h-4 w-4" />
-              Import Cities
+              Import Countries
             </Button>
           </div>
         </div>
@@ -182,7 +186,7 @@ const CityImportExport = ({ onImportComplete, filters = {} }) => {
         <BaseModal
           isOpen={showImportModal}
           onClose={resetImport}
-          title="Import Cities"
+          title="Import Countries"
           maxWidth="md"
           variant="centered"
           contentClassName="p-6"
@@ -221,7 +225,7 @@ const CityImportExport = ({ onImportComplete, filters = {} }) => {
                       size="default"
                       className="flex items-center justify-center gap-2 w-full sm:w-auto"
                     >
-                      Import Cities
+                      Import Countries
                     </LoadingButton>
                   </div>
                 </div>

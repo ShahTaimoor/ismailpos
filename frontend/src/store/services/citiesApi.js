@@ -113,6 +113,7 @@ export const {
   useExportCitiesMutation,
   useImportCitiesMutation,
   useDownloadCityTemplateQuery,
+  useLazyDownloadCityTemplateQuery,
   useLazyDownloadCityExportFileQuery,
 } = citiesApi;
 

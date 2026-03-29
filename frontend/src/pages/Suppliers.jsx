@@ -629,7 +629,7 @@ const SupplierForm = ({ supplier, onSave, onCancel, isOpen, isSubmitting }) => {
                         />
                       </div>
                       <div className="min-w-0">
-                        <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1 sm:mb-2">City *</label>
+                        <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1 sm:mb-2">Country *</label>
                         <select
                           value={address.city || ''}
                           onChange={(e) => handleAddressChange(index, 'city', e.target.value)}
@@ -637,7 +637,7 @@ const SupplierForm = ({ supplier, onSave, onCancel, isOpen, isSubmitting }) => {
                           required
                           disabled={citiesLoading}
                         >
-                          <option value="">Select a city</option>
+                          <option value="">Select a country</option>
                           {Array.isArray(citiesData) && citiesData.map((city) => (
                             <option key={city._id || city.name} value={city.name}>
                               {city.name}{city.state ? `, ${city.state}` : ''}
@@ -645,7 +645,7 @@ const SupplierForm = ({ supplier, onSave, onCancel, isOpen, isSubmitting }) => {
                           ))}
                         </select>
                         {citiesLoading && (
-                          <p className="text-xs text-gray-500 mt-1">Loading cities...</p>
+                          <p className="text-xs text-gray-500 mt-1">Loading countries...</p>
                         )}
                         {!citiesLoading && citiesData.length === 0 && (
                           <p className="text-xs text-amber-600 mt-1">

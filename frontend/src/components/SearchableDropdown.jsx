@@ -21,7 +21,7 @@ export const SearchableDropdown = forwardRef(({
   showSelected = true,
   value = null,
   openOnFocus = false,
-  rightContentKey = null // Function or key to get right-side content (e.g., city)
+  rightContentKey = null // Function or key to get right-side content (e.g., country)
 }, ref) => {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -340,7 +340,7 @@ export const SearchableDropdown = forwardRef(({
     return valueToDisplayString(rawValue) || '';
   };
 
-  // Get right-side content (e.g., city for customers)
+  // Get right-side content (e.g., country for customers)
   const getRightContent = (item) => {
     if (!item || !rightContentKey) return null;
 
@@ -350,10 +350,9 @@ export const SearchableDropdown = forwardRef(({
 
     // If rightContentKey is a string, try to get the value
     if (typeof rightContentKey === 'string') {
-      // Special handling for customer city
-      if (rightContentKey === 'city' && item.addresses && Array.isArray(item.addresses)) {
+      if ((rightContentKey === 'city' || rightContentKey === 'country') && item.addresses && Array.isArray(item.addresses)) {
         const defaultAddress = item.addresses.find(addr => addr.isDefault) || item.addresses[0];
-        return defaultAddress?.city || '';
+        return defaultAddress?.country || defaultAddress?.city || '';
       }
       return valueToDisplayString(item[rightContentKey]) || '';
     }
