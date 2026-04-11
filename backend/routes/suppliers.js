@@ -1,9 +1,5 @@
 const express = require('express');
 const { body, validationResult, query } = require('express-validator');
-const multer = require('multer');
-const csv = require('csv-parser');
-const createCsvWriter = require('csv-writer').createObjectCsvWriter;
-const XLSX = require('xlsx');
 const fs = require('fs');
 const path = require('path');
 const { auth, requirePermission } = require('../middleware/auth');
@@ -44,26 +40,7 @@ const applyOpeningBalance = (supplier, openingBalance) => {
   supplier.currentBalance = supplier.pendingBalance - (supplier.advanceBalance || 0);
 };
 
-// Configure multer for file uploads
-const upload = multer({
-  dest: 'uploads/',
-  fileFilter: (req, file, cb) => {
-    const allowedMimes = [
-      'text/csv',
-      'application/vnd.ms-excel',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    ];
-    
-    if (allowedMimes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Only CSV and Excel files are allowed.'), false);
-    }
-  },
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
-  }
-});
+
 
 const buildSupplierCreatePayload = (body, userId) => {
   const openingBalance = parseOpeningBalance(body.openingBalance);
@@ -137,6 +114,12 @@ router.get('/', [
   query('phoneStatus').optional().isIn(['verified', 'unverified', 'no-phone'])
 ], async (req, res) => {
   try {
+    // Prevent stale list after import (avoid 304/cached supplier listing)
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    res.set('Surrogate-Control', 'no-store');
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       console.error('Suppliers validation errors:', errors.array());
@@ -411,292 +394,28 @@ router.post('/:id/restore', [
 });
 
 // @route   POST /api/suppliers/import/excel
-// @desc    Import suppliers from Excel
+
+
+
+// @route   POST /api/suppliers/bulk-create
+// @desc    Bulk create suppliers from import
 // @access  Private
-router.post('/import/excel', [
+router.post('/bulk-create', [
   auth,
   requirePermission('create_suppliers'),
-  upload.single('file')
+  body('suppliers').isArray().withMessage('Suppliers array is required')
 ], async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ message: 'No file uploaded' });
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
     }
     
-    const results = {
-      total: 0,
-      success: 0,
-      errors: []
-    };
-    
-    // Read Excel file
-    const workbook = XLSX.readFile(req.file.path);
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-    const suppliers = XLSX.utils.sheet_to_json(worksheet);
-    
-    results.total = suppliers.length;
-    
-    for (let i = 0; i < suppliers.length; i++) {
-      try {
-        const row = suppliers[i];
-        
-        // Map Excel columns to our format
-        const supplierData = {
-          companyName: row['Company Name'] || row['companyName'] || row.companyName,
-          contactPersonName: row['Contact Person'] || row['contactPerson'] || row.contactPersonName,
-          contactPersonTitle: row['Contact Title'] || row['contactTitle'] || row.contactPersonTitle || '',
-          email: row['Email'] || row['email'] || row.email || undefined,
-          phone: row['Phone'] || row['phone'] || row.phone || '',
-          website: row['Website'] || row['website'] || row.website || '',
-          taxId: row['Tax ID'] || row['taxId'] || row.taxId || '',
-          businessType: row['Business Type'] || row['businessType'] || row.businessType || 'wholesaler',
-          paymentTerms: row['Payment Terms'] || row['paymentTerms'] || row.paymentTerms || 'net30',
-          reliability: row['Reliability'] || row['reliability'] || row.reliability || 'average',
-          rating: row['Rating'] || row['rating'] || row.rating || 3,
-          status: row['Status'] || row['status'] || row.status || 'active',
-          notes: row['Notes'] || row['notes'] || row.notes || ''
-        };
-        
-        // Validate required fields
-        if (!supplierData.companyName) {
-          results.errors.push({
-            row: i + 2,
-            error: 'Missing required field: Company Name is required'
-          });
-          continue;
-        }
-        
-        if (!supplierData.contactPersonName) {
-          results.errors.push({
-            row: i + 2,
-            error: 'Missing required field: Contact Person is required'
-          });
-          continue;
-        }
-        
-        // Check if supplier already exists
-        const supplierExists = await supplierService.supplierExists({ 
-          companyName: supplierData.companyName.toString().trim()
-        });
-        
-        if (supplierExists) {
-          results.errors.push({
-            row: i + 2,
-            error: `Supplier already exists with company name: ${supplierData.companyName}`
-          });
-          continue;
-        }
-        
-        const userId = req.user?.id || req.user?._id;
-        const contactName = supplierData.contactPersonName.toString().trim();
-        await supplierRepository.create({
-          companyName: supplierData.companyName.toString().trim(),
-          contactPerson: contactName,
-          email: supplierData.email ? supplierData.email.toString().trim() : null,
-          phone: (supplierData.phone || '').toString().trim() || null,
-          taxId: (supplierData.taxId || '').toString().trim() || null,
-          paymentTerms: (supplierData.paymentTerms || 'net30').toString().toLowerCase(),
-          notes: (supplierData.notes || '').toString().trim() || null,
-          status: (supplierData.status || 'active').toString().toLowerCase(),
-          createdBy: userId
-        });
-        results.success++;
-        
-      } catch (error) {
-        results.errors.push({
-          row: i + 2,
-          error: error.message
-        });
-      }
-    }
-    
-    // Clean up uploaded file
-    fs.unlinkSync(req.file.path);
-    
-    res.json({
-      message: 'Import completed',
-      results: results
-    });
-    
+    const result = await supplierService.bulkCreateSuppliers(req.body.suppliers, req.user?.id || req.user?._id);
+    res.status(201).json(result);
   } catch (error) {
-    console.error('Excel import error:', error);
-    res.status(500).json({ message: 'Import failed' });
-  }
-});
-
-// @route   POST /api/suppliers/export/excel
-// @desc    Export suppliers to Excel
-// @access  Private
-router.post('/export/excel', [auth, requirePermission('view_suppliers')], async (req, res) => {
-  try {
-    const { filters = {} } = req.body;
-    
-    // Build query based on filters
-    const query = {};
-    if (filters.businessType) query.businessType = filters.businessType;
-    if (filters.status) query.status = filters.status;
-    if (filters.reliability) query.reliability = filters.reliability;
-    
-    const suppliers = await supplierService.getSuppliersForExport(query);
-    
-    const excelData = suppliers.map(supplier => ({
-      'Company Name': supplier.company_name || supplier.companyName || '',
-      'Contact Person': supplier.contact_person || supplier.contactPerson?.name || '',
-      'Contact Title': supplier.contactPerson?.title || '',
-      'Email': supplier.email || '',
-      'Phone': supplier.phone || '',
-      'Website': supplier.website || '',
-      'Tax ID': supplier.tax_id || supplier.taxId || '',
-      'Business Type': supplier.businessType || '',
-      'Payment Terms': supplier.payment_terms || supplier.paymentTerms || '',
-      'Reliability': supplier.reliability || '',
-      'Rating': supplier.rating || 3,
-      'Current Balance': supplier.currentBalance || 0,
-      'Status': supplier.status || (supplier.is_active ? 'active' : 'inactive'),
-      'Notes': supplier.notes || '',
-      'Created Date': (supplier.created_at || supplier.createdAt)?.toISOString?.()?.split?.('T')[0] || ''
-    }));
-    
-    // Create Excel workbook
-    const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(excelData);
-    
-    // Set column widths
-    const columnWidths = [
-      { wch: 25 }, // Company Name
-      { wch: 20 }, // Contact Person
-      { wch: 20 }, // Contact Title
-      { wch: 25 }, // Email
-      { wch: 15 }, // Phone
-      { wch: 25 }, // Website
-      { wch: 15 }, // Tax ID
-      { wch: 15 }, // Business Type
-      { wch: 15 }, // Payment Terms
-      { wch: 12 }, // Reliability
-      { wch: 8 },  // Rating
-      { wch: 15 }, // Current Balance
-      { wch: 10 }, // Status
-      { wch: 30 }, // Notes
-      { wch: 12 }  // Created Date
-    ];
-    worksheet['!cols'] = columnWidths;
-    
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Suppliers');
-    
-    // Ensure exports directory exists
-    if (!fs.existsSync('exports')) {
-      fs.mkdirSync('exports');
-    }
-    
-    const filename = 'suppliers.xlsx';
-    const filepath = path.join('exports', filename);
-    XLSX.writeFile(workbook, filepath);
-    
-    res.json({
-      message: 'Suppliers exported successfully',
-      filename: filename,
-      recordCount: excelData.length,
-      downloadUrl: `/api/suppliers/download/${filename}`
-    });
-    
-  } catch (error) {
-    console.error('Excel export error:', error);
-    res.status(500).json({ message: 'Export failed' });
-  }
-});
-
-// @route   GET /api/suppliers/download/:filename
-// @desc    Download exported file
-// @access  Private
-router.get('/download/:filename', [auth, requirePermission('view_suppliers')], (req, res) => {
-  try {
-    const filename = req.params.filename;
-    const filepath = path.join('exports', filename);
-    
-    if (!fs.existsSync(filepath)) {
-      return res.status(404).json({ message: 'File not found' });
-    }
-    
-    res.download(filepath, filename, (err) => {
-      if (err) {
-        console.error('Download error:', err);
-        res.status(500).json({ message: 'Download failed' });
-      }
-    });
-    
-  } catch (error) {
-    console.error('Download error:', error);
-    res.status(500).json({ message: 'Download failed' });
-  }
-});
-
-// @route   GET /api/suppliers/template/excel
-// @desc    Download Excel template
-// @access  Private
-router.get('/template/excel', [auth, requirePermission('create_suppliers')], (req, res) => {
-  try {
-    const templateData = [
-      {
-        'Company Name': 'ABC Suppliers Inc',
-        'Contact Person': 'Jane Smith',
-        'Contact Title': 'Sales Manager',
-        'Email': 'jane@abcsuppliers.com',
-        'Phone': '555-0456',
-        'Website': 'www.abcsuppliers.com',
-        'Tax ID': '98-7654321',
-        'Business Type': 'wholesaler',
-        'Payment Terms': 'net30',
-        'Reliability': 'good',
-        'Rating': '4',
-        'Status': 'active',
-        'Notes': 'Sample supplier for template'
-      }
-    ];
-    
-    // Create Excel workbook
-    const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(templateData);
-    
-    // Set column widths
-    const columnWidths = [
-      { wch: 25 }, // Company Name
-      { wch: 20 }, // Contact Person
-      { wch: 20 }, // Contact Title
-      { wch: 25 }, // Email
-      { wch: 15 }, // Phone
-      { wch: 25 }, // Website
-      { wch: 15 }, // Tax ID
-      { wch: 15 }, // Business Type
-      { wch: 15 }, // Payment Terms
-      { wch: 12 }, // Reliability
-      { wch: 8 },  // Rating
-      { wch: 10 }, // Status
-      { wch: 30 }  // Notes
-    ];
-    worksheet['!cols'] = columnWidths;
-    
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Suppliers');
-    
-    // Ensure exports directory exists
-    if (!fs.existsSync('exports')) {
-      fs.mkdirSync('exports');
-    }
-    
-    const filename = 'supplier_template.xlsx';
-    const filepath = path.join('exports', filename);
-    XLSX.writeFile(workbook, filepath);
-    
-    res.download(filepath, filename, (err) => {
-      if (err) {
-        console.error('Download error:', err);
-        res.status(500).json({ message: 'Failed to download template' });
-      }
-    });
-    
-  } catch (error) {
-    console.error('Template error:', error);
-    res.status(500).json({ message: 'Failed to generate template' });
+    console.error('Bulk create suppliers error:', error);
+    res.status(500).json({ message: 'Server error bulk creating suppliers', error: error.message });
   }
 });
 

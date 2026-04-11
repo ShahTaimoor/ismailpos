@@ -41,6 +41,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'sonner';
 import ErrorBoundary from './ErrorBoundary';
 import MobileNavigation from './MobileNavigation';
+import { loadSidebarConfig } from './MultiTabLayout';
 import { useResponsive } from './ResponsiveContainer';
 import { WhatsAppFloat } from './WhatsAppFloat';
 import { useGetCategoriesQuery } from '../store/services/categoriesApi';
@@ -133,7 +134,7 @@ export const navigation = [
     icon: BarChart3,
     children: [
       { name: 'P&L Statements', href: '/pl-statements', icon: BarChart3 },
-      { name: 'Balance Sheets', href: '/balance-sheets', icon: FileText },
+      { name: 'Balance Sheet', href: '/balance-sheet-statement', icon: FileText },
       { name: 'Sales Performance', href: '/sales-performance', icon: TrendingUp },
       { name: 'Inventory Reports', href: '/inventory-reports', icon: Warehouse },
       { name: 'Reports', href: '/reports', icon: BarChart3 },
@@ -360,19 +361,13 @@ export const Layout = ({ children }) => {
   const navigate = useNavigate();
   const { isMobile } = useResponsive();
   
-  // Sidebar visibility state
-  const [sidebarConfig, setSidebarConfig] = useState(() => {
-    const saved = localStorage.getItem('sidebarConfig');
-    return saved ? JSON.parse(saved) : {};
-  });
+  // Sidebar visibility state (keys align with MultiTabLayout / Settings; migration in loadSidebarConfig)
+  const [sidebarConfig, setSidebarConfig] = useState(() => loadSidebarConfig());
 
   // Listener for sidebar configuration changes
   useEffect(() => {
     const handleSidebarChange = () => {
-      const saved = localStorage.getItem('sidebarConfig');
-      if (saved) {
-        setSidebarConfig(JSON.parse(saved));
-      }
+      setSidebarConfig(loadSidebarConfig());
     };
 
     window.addEventListener('sidebarConfigChanged', handleSidebarChange);

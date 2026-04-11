@@ -211,14 +211,14 @@ export const CustomerFormModal = ({ customer, onSave, onCancel, isSubmitting }) 
   const handleCitySubmit = (e) => {
     e.preventDefault();
     if (!cityFormData.name.trim()) {
-      toast.error('Country name is required');
+      toast.error('City name is required');
       return;
     }
     const newCityName = cityFormData.name.trim();
     createCity(cityFormData)
       .unwrap()
       .then(() => {
-        toast.success('Country created successfully');
+        toast.success('City created successfully');
         setIsCityModalOpen(false);
         setCityFormData({
           name: '',
@@ -236,7 +236,7 @@ export const CustomerFormModal = ({ customer, onSave, onCancel, isSubmitting }) 
         });
       })
       .catch((error) => {
-        toast.error(error?.data?.message || 'Failed to create country');
+        toast.error(error?.data?.message || 'Failed to create city');
       });
   };
 
@@ -510,7 +510,7 @@ export const CustomerFormModal = ({ customer, onSave, onCancel, isSubmitting }) 
                       </div>
                       <div className="min-w-0">
                         <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1 sm:mb-2">
-                          Country *
+                          City *
                         </label>
                         <select
                           value={address.city || ''}
@@ -519,7 +519,7 @@ export const CustomerFormModal = ({ customer, onSave, onCancel, isSubmitting }) 
                           required
                           disabled={citiesLoading}
                         >
-                          <option value="">Select a country</option>
+                          <option value="">Select a city</option>
                           {Array.isArray(citiesData) && citiesData.map((city) => (
                             <option key={city._id || city.name} value={city.name}>
                               {city.name}{city.state ? `, ${city.state}` : ''}
@@ -527,11 +527,11 @@ export const CustomerFormModal = ({ customer, onSave, onCancel, isSubmitting }) 
                           ))}
                         </select>
                         {citiesLoading && (
-                          <p className="text-[10px] sm:text-xs text-gray-500 mt-0.5 sm:mt-1">Loading countries...</p>
+                          <p className="text-[10px] sm:text-xs text-gray-500 mt-0.5 sm:mt-1">Loading cities...</p>
                         )}
                         {!citiesLoading && Array.isArray(citiesData) && citiesData.length === 0 && (
                           <p className="text-[10px] sm:text-xs text-amber-600 mt-0.5 sm:mt-1">
-                            No countries available. Please add countries first.
+                            No cities available. Please add cities first.
                           </p>
                         )}
                       </div>
@@ -604,7 +604,7 @@ export const CustomerFormModal = ({ customer, onSave, onCancel, isSubmitting }) 
               isActive: true
             });
           }}
-          title="Add New Country"
+          title="Add New City"
           maxWidth="md"
           variant="centered"
           zIndex={60}
@@ -613,7 +613,7 @@ export const CustomerFormModal = ({ customer, onSave, onCancel, isSubmitting }) 
           <form onSubmit={handleCitySubmit} className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Country *
+                    City Name *
                   </label>
                   <input
                     type="text"
@@ -621,7 +621,7 @@ export const CustomerFormModal = ({ customer, onSave, onCancel, isSubmitting }) 
                     autoComplete="off"
                     onChange={(e) => setCityFormData({ ...cityFormData, name: e.target.value })}
                     className="input"
-                    placeholder="Enter country name"
+                    placeholder="Enter city name"
                     required
                   />
                 </div>
@@ -642,7 +642,7 @@ export const CustomerFormModal = ({ customer, onSave, onCancel, isSubmitting }) 
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Listed country
+                    Country
                   </label>
                   <input
                     type="text"
@@ -650,7 +650,7 @@ export const CustomerFormModal = ({ customer, onSave, onCancel, isSubmitting }) 
                     autoComplete="off"
                     onChange={(e) => setCityFormData({ ...cityFormData, country: e.target.value })}
                     className="input"
-                    placeholder="Enter listed country"
+                    placeholder="Enter country"
                   />
                 </div>
 
@@ -690,7 +690,7 @@ export const CustomerFormModal = ({ customer, onSave, onCancel, isSubmitting }) 
                     className="btn btn-primary"
                     disabled={creatingCity}
                   >
-                    {creatingCity ? 'Adding...' : 'Add Country'}
+                    {creatingCity ? 'Adding...' : 'Add City'}
                   </button>
                 </div>
               </form>

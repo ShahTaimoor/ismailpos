@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import { useResponsive } from './ResponsiveContainer';
 import { useAuth } from '../contexts/AuthContext';
+import { loadSidebarConfig } from './MultiTabLayout';
 
 const MobileNavigation = ({ user, onLogout }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -92,7 +93,7 @@ const MobileNavigation = ({ user, onLogout }) => {
     { path: '/purchase-returns', icon: RotateCcw, label: 'Purchase Returns', badge: null, permission: 'view_returns' },
     { path: '/discounts', icon: Tag, label: 'Discounts', badge: null, permission: 'view_discounts' },
     { path: '/pl-statements', icon: BarChart3, label: 'P&L Statements', badge: null, permission: 'view_pl_statements' },
-    { path: '/balance-sheets', icon: FileText, label: 'Balance Sheets', badge: null, permission: 'view_balance_sheets' },
+    { path: '/balance-sheet-statement', icon: FileText, label: 'Balance Sheet', badge: null, permission: 'view_balance_sheets' },
     { path: '/sales-performance', icon: TrendingUp, label: 'Sales Performance', badge: null, permission: 'view_sales_performance' },
     { path: '/inventory-reports', icon: Warehouse, label: 'Inventory Reports', badge: null, permission: 'view_inventory_reports' },
     { path: '/reports', icon: BarChart3, label: 'Reports', badge: null, permission: 'view_general_reports' },
@@ -110,18 +111,12 @@ const MobileNavigation = ({ user, onLogout }) => {
   ];
 
   // Sidebar visibility state
-  const [sidebarConfig, setSidebarConfig] = useState(() => {
-    const saved = localStorage.getItem('sidebarConfig');
-    return saved ? JSON.parse(saved) : {};
-  });
+  const [sidebarConfig, setSidebarConfig] = useState(() => loadSidebarConfig());
 
   // Listener for sidebar configuration changes
   useEffect(() => {
     const handleSidebarChange = () => {
-      const saved = localStorage.getItem('sidebarConfig');
-      if (saved) {
-        setSidebarConfig(JSON.parse(saved));
-      }
+      setSidebarConfig(loadSidebarConfig());
     };
 
     window.addEventListener('sidebarConfigChanged', handleSidebarChange);

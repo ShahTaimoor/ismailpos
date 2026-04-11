@@ -1,5 +1,7 @@
 const salesRepository = require('../repositories/SalesRepository');
 const productRepository = require('../repositories/ProductRepository');
+const customerRepository = require('../repositories/CustomerRepository');
+const salesService = require('./salesService');
 const ReturnRepository = require('../repositories/postgres/ReturnRepository');
 
 class ReportsService {
@@ -90,7 +92,7 @@ class ReportsService {
         sql = `
           WITH sale_items AS (
             SELECT 
-              COALESCE(elem->>'product', elem->>'product_id')::uuid as product_id,
+              COALESCE(elem->>'product', elem->>'product_id') as product_id,
               (elem->>'quantity')::numeric as quantity,
               (elem->>'total')::numeric as line_total,
               s.customer_id,
@@ -106,7 +108,7 @@ class ReportsService {
             COALESCE(SUM(si.line_total), 0) as "totalRevenue",
             COUNT(*) as "saleCount"
           FROM sale_items si
-          JOIN products p ON si.product_id = p.id
+          JOIN products p ON si.product_id = p.id::text
           LEFT JOIN customers c ON si.customer_id = c.id
           WHERE 1=1 ${cityFilter}
           GROUP BY p.id, p.name, p.sku
@@ -118,7 +120,7 @@ class ReportsService {
         sql = `
           WITH sale_items AS (
             SELECT 
-              COALESCE(elem->>'product', elem->>'product_id')::uuid as product_id,
+              COALESCE(elem->>'product', elem->>'product_id') as product_id,
               (elem->>'total')::numeric as line_total,
               s.customer_id
             FROM sales s,
@@ -130,7 +132,7 @@ class ReportsService {
             COALESCE(SUM(si.line_total), 0) as "totalRevenue",
             COUNT(*) as "itemCount"
           FROM sale_items si
-          JOIN products p ON si.product_id = p.id
+          JOIN products p ON si.product_id = p.id::text
           JOIN categories cat ON p.category_id = cat.id
           LEFT JOIN customers c ON si.customer_id = c.id
           WHERE 1=1 ${cityFilter}
@@ -238,21 +240,34 @@ class ReportsService {
     
     const limit = parseInt(queryParams.limit) || 20;
 
-    const orders = await salesRepository.findAll({
-      createdAt: { $gte: dateFrom, $lte: dateTo },
-      status: { $nin: ['cancelled'] }
-    }, {
-      populate: [{ path: 'items.product', select: 'name description pricing' }],
-      sort: { createdAt: 1 }
-    });
+    const orders = await salesRepository.findAll(
+      {
+        dateFrom,
+        dateTo,
+        excludeStatuses: ['cancelled']
+      },
+      { sort: { created_at: 1 } }
+    );
+
+    for (const order of orders) {
+      order.items = await salesService.enrichItemsWithProductNames(order.items || []);
+    }
 
     // Aggregate product sales
     const productSales = {};
 
     orders.forEach(order => {
-      order.items.forEach(item => {
+      let items = order.items || [];
+      if (typeof items === 'string') {
+        try {
+          items = JSON.parse(items);
+        } catch {
+          items = [];
+        }
+      }
+      items.forEach(item => {
         if (!item.product) return;
-        const productId = item.product._id.toString();
+        const productId = (item.product._id || item.product.id).toString();
         if (!productSales[productId]) {
           productSales[productId] = {
             product: item.product,
@@ -263,8 +278,8 @@ class ReportsService {
           };
         }
 
-        productSales[productId].totalQuantity += item.quantity;
-        productSales[productId].totalRevenue += item.total;
+        productSales[productId].totalQuantity += Number(item.quantity || 0);
+        productSales[productId].totalRevenue += Number(item.total || 0);
         productSales[productId].totalOrders += 1;
       });
     });
@@ -315,27 +330,46 @@ class ReportsService {
     const limit = parseInt(queryParams.limit) || 20;
     const businessType = queryParams.businessType;
 
-    const filter = {
-      createdAt: { $gte: dateFrom, $lte: dateTo },
-      status: { $nin: ['cancelled'] },
-      customer: { $exists: true, $ne: null }
-    };
+    const orders = await salesRepository.findAll(
+      {
+        dateFrom,
+        dateTo,
+        excludeStatuses: ['cancelled'],
+        requireCustomerId: true
+      },
+      { sort: { created_at: 1 } }
+    );
 
-    const orders = await salesRepository.findAll(filter, {
-      populate: [{ path: 'customer', select: 'firstName lastName businessName businessType customerTier' }],
-      sort: { createdAt: 1 }
-    });
+    const rawIds = [...new Set(orders.map(o => o.customer_id).filter(Boolean))];
+    const customerMap = new Map();
+    if (rawIds.length > 0) {
+      const rows = await customerRepository.findAll({ customerIds: rawIds });
+      rows.forEach((c) => {
+        const id = String(c.id);
+        customerMap.set(id, {
+          _id: c.id,
+          id: c.id,
+          firstName: c.first_name ?? c.firstName,
+          lastName: c.last_name ?? c.lastName,
+          businessName: c.business_name ?? c.businessName,
+          businessType: c.business_type ?? c.businessType,
+          customerTier: c.customer_tier ?? c.customerTier
+        });
+      });
+    }
 
     // Aggregate customer sales
     const customerSales = {};
 
     orders.forEach(order => {
-      if (!order.customer) return;
+      const cid = order.customer_id ? String(order.customer_id) : null;
+      const customer = cid ? customerMap.get(cid) : null;
+      if (!customer) return;
 
-      const customerId = order.customer._id.toString();
+      const customerId = String(customer._id);
       if (!customerSales[customerId]) {
         customerSales[customerId] = {
-          customer: order.customer,
+          customer,
           totalOrders: 0,
           totalRevenue: 0,
           totalItems: 0,
@@ -344,12 +378,24 @@ class ReportsService {
         };
       }
 
-      customerSales[customerId].totalOrders += 1;
-      customerSales[customerId].totalRevenue += order.pricing.total;
-      customerSales[customerId].totalItems += order.items.reduce((sum, item) => sum + item.quantity, 0);
+      let items = order.items || [];
+      if (typeof items === 'string') {
+        try {
+          items = JSON.parse(items);
+        } catch {
+          items = [];
+        }
+      }
 
-      if (!customerSales[customerId].lastOrderDate || order.createdAt > customerSales[customerId].lastOrderDate) {
-        customerSales[customerId].lastOrderDate = order.createdAt;
+      const orderDate = order.created_at || order.createdAt;
+      const orderTotal = Number(order.total ?? order.pricing?.total ?? 0);
+
+      customerSales[customerId].totalOrders += 1;
+      customerSales[customerId].totalRevenue += orderTotal;
+      customerSales[customerId].totalItems += items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+
+      if (!customerSales[customerId].lastOrderDate || (orderDate && orderDate > customerSales[customerId].lastOrderDate)) {
+        customerSales[customerId].lastOrderDate = orderDate;
       }
     });
 
@@ -393,13 +439,22 @@ class ReportsService {
     const { getStartOfDayPakistan, getEndOfDayPakistan } = require('../utils/dateFilter');
 
     const categoryId = filters.category && filters.category !== 'all' ? filters.category : null;
+    const searchTerm = filters.search && String(filters.search).trim() ? String(filters.search).trim() : null;
     const dateFrom = filters.dateFrom ? getStartOfDayPakistan(filters.dateFrom) : getStartOfDayPakistan(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
     const dateTo = filters.dateTo ? getEndOfDayPakistan(filters.dateTo) : getEndOfDayPakistan(new Date().toISOString().split('T')[0]);
 
     const params = [dateFrom, dateTo];
     let paramIdx = 3;
-    const prodFilter = categoryId ? ` AND p.category_id = $${paramIdx++}` : '';
-    if (categoryId) params.push(categoryId);
+    let prodFilter = '';
+    if (categoryId) {
+      prodFilter += ` AND p.category_id = $${paramIdx++}`;
+      params.push(categoryId);
+    }
+    if (searchTerm) {
+      prodFilter += ` AND (p.name ILIKE $${paramIdx} OR p.sku ILIKE $${paramIdx} OR p.barcode ILIKE $${paramIdx})`;
+      params.push(`%${searchTerm}%`);
+      paramIdx += 1;
+    }
 
     const stockInTypes = "'purchase','return_in','adjustment_in','transfer_in','production','initial_stock'";
     const stockOutTypes = "'sale','return_out','adjustment_out','transfer_out','damage','expiry','theft','consumption'";
@@ -411,6 +466,7 @@ class ReportsService {
                COALESCE(p.selling_price, 0) as selling_price,
                COALESCE(p.wholesale_price, p.selling_price, 0) as wholesale_price,
                COALESCE(p.min_stock_level, 0) as min_stock_level,
+               p.image_url,
                COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0)::decimal as "currentStock"
         FROM products p
         LEFT JOIN categories cat ON p.category_id = cat.id
@@ -452,6 +508,7 @@ class ReportsService {
         pb.id, pb.name, pb.sku, pb.unit, pb."categoryName", pb.cost_price, pb.selling_price, pb.wholesale_price,
         pb."currentStock",
         pb.min_stock_level,
+        pb.image_url as "imageUrl",
         (pb."currentStock" - COALESCE(pa.net_qty, 0))::decimal as "openingQty",
         COALESCE(pa.net_qty, 0)::decimal as "netQty",
         COALESCE(pa.purchase_qty, 0)::decimal as "purchaseQty",
@@ -508,6 +565,7 @@ class ReportsService {
         sku: r.sku,
         unit: r.unit,
         categoryName: r.categoryName,
+        imageUrl: r.imageUrl,
         minStockLevel,
         lastPurchasePrice,
         currentStock,
@@ -534,24 +592,24 @@ class ReportsService {
     });
 
     const totals = rows.reduce((acc, r) => ({
-      openingQty: acc.openingQty + r.openingQty,
-      openingAmount: acc.openingAmount + r.openingAmount,
-      purchaseQty: acc.purchaseQty + r.purchaseQty,
-      purchaseAmount: acc.purchaseAmount + r.purchaseAmount,
-      purchaseReturnQty: acc.purchaseReturnQty + r.purchaseReturnQty,
-      purchaseReturnAmount: acc.purchaseReturnAmount + r.purchaseReturnAmount,
-      saleQty: acc.saleQty + r.saleQty,
-      saleAmount: acc.saleAmount + r.saleAmount,
-      saleReturnQty: acc.saleReturnQty + r.saleReturnQty,
-      saleReturnAmount: acc.saleReturnAmount + r.saleReturnAmount,
-      damageQty: acc.damageQty + r.damageQty,
-      damageAmount: acc.damageAmount + r.damageAmount,
-      closingQty: acc.closingQty + r.closingQty,
-      closingAmount: acc.closingAmount + r.closingAmount,
-      currentStock: acc.currentStock + (r.currentStock || 0),
-      reconciliationDelta: acc.reconciliationDelta + (r.reconciliationDelta || 0),
-      wholesaleValuation: acc.wholesaleValuation + (r.wholesaleValuation || 0),
-      retailValuation: acc.retailValuation + (r.retailValuation || 0)
+      openingQty: acc.openingQty + (parseFloat(r.openingQty) || 0),
+      openingAmount: acc.openingAmount + (parseFloat(r.openingAmount) || 0),
+      purchaseQty: acc.purchaseQty + (parseFloat(r.purchaseQty) || 0),
+      purchaseAmount: acc.purchaseAmount + (parseFloat(r.purchaseAmount) || 0),
+      purchaseReturnQty: acc.purchaseReturnQty + (parseFloat(r.purchaseReturnQty) || 0),
+      purchaseReturnAmount: acc.purchaseReturnAmount + (parseFloat(r.purchaseReturnAmount) || 0),
+      saleQty: acc.saleQty + (parseFloat(r.saleQty) || 0),
+      saleAmount: acc.saleAmount + (parseFloat(r.saleAmount) || 0),
+      saleReturnQty: acc.saleReturnQty + (parseFloat(r.saleReturnQty) || 0),
+      saleReturnAmount: acc.saleReturnAmount + (parseFloat(r.saleReturnAmount) || 0),
+      damageQty: acc.damageQty + (parseFloat(r.damageQty) || 0),
+      damageAmount: acc.damageAmount + (parseFloat(r.damageAmount) || 0),
+      closingQty: acc.closingQty + (parseFloat(r.closingQty) || 0),
+      closingAmount: acc.closingAmount + (parseFloat(r.closingAmount) || 0),
+      currentStock: acc.currentStock + (parseFloat(r.currentStock) || 0),
+      reconciliationDelta: acc.reconciliationDelta + (parseFloat(r.reconciliationDelta) || 0),
+      wholesaleValuation: acc.wholesaleValuation + (parseFloat(r.wholesaleValuation) || 0),
+      retailValuation: acc.retailValuation + (parseFloat(r.retailValuation) || 0)
     }), { openingQty: 0, openingAmount: 0, purchaseQty: 0, purchaseAmount: 0, purchaseReturnQty: 0, purchaseReturnAmount: 0, saleQty: 0, saleAmount: 0, saleReturnQty: 0, saleReturnAmount: 0, damageQty: 0, damageAmount: 0, closingQty: 0, closingAmount: 0, currentStock: 0, reconciliationDelta: 0, wholesaleValuation: 0, retailValuation: 0 });
 
     const outOfStockCount = rows.filter(r => (r.closingQty || 0) === 0).length;
@@ -574,7 +632,7 @@ class ReportsService {
       summary: {
         ...totals,
         totalItems: rows.length,
-        totalValuation: totals.closingAmount,
+        totalCost: totals.closingAmount,
         totalWholesaleValuation: totals.wholesaleValuation,
         totalRetailValuation: totals.retailValuation,
         totalCurrentStock: totals.currentStock,
@@ -586,7 +644,7 @@ class ReportsService {
         inStockCount
       },
       reportType: 'stock-summary',
-      filters: { categoryId, dateFrom: filters.dateFrom, dateTo: filters.dateTo }
+      filters: { categoryId, search: searchTerm || undefined, dateFrom: filters.dateFrom, dateTo: filters.dateTo }
     };
   }
 
@@ -634,6 +692,7 @@ class ReportsService {
         p.name,
         p.sku,
         p.barcode,
+        p.image_url as "imageUrl",
         cat.name as "categoryName",
         COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0) as "stockQuantity",
         p.min_stock_level as "minStockLevel",
@@ -656,8 +715,8 @@ class ReportsService {
     const summarySql = `
       SELECT 
         COUNT(*) as "totalItems",
-        SUM(COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0) * p.cost_price) as "totalValuation",
-        SUM(COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0) * p.selling_price) as "totalRetailValuation",
+        SUM(COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0) * COALESCE(p.cost_price, 0)) as "totalCost",
+        SUM(COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0) * COALESCE(p.selling_price, 0)) as "totalRetailValuation",
         COUNT(*) FILTER (WHERE COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0) = 0) as "outOfStockCount",
         COUNT(*) FILTER (WHERE COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0) > 0 
                          AND COALESCE(p.min_stock_level, 0) > 0
@@ -689,7 +748,7 @@ class ReportsService {
       })),
       summary: {
         totalItems: parseInt(summary.totalItems || 0),
-        totalValuation: parseFloat(summary.totalValuation || 0),
+        totalCost: parseFloat(summary.totalCost || 0),
         totalRetailValuation: parseFloat(summary.totalRetailValuation || 0),
         lowStockCount: parseInt(summary.lowStockCount || 0),
         outOfStockCount: parseInt(summary.outOfStockCount || 0),
@@ -742,6 +801,7 @@ class ReportsService {
           FROM chart_of_accounts coa
           LEFT JOIN account_ledger l ON coa.account_code = l.account_code 
             AND l.status = 'completed' 
+            AND l.reversed_at IS NULL
             ${dateFrom && dateTo ? 'AND l.transaction_date BETWEEN $1 AND $2' : dateTo ? 'AND l.transaction_date <= $1' : ''}
           WHERE coa.deleted_at IS NULL
           GROUP BY coa.id, coa.account_code, coa.account_name, coa.account_type, coa.normal_balance, coa.opening_balance
@@ -764,6 +824,7 @@ class ReportsService {
           JOIN account_ledger l ON coa.account_code = l.account_code
           WHERE coa.account_type IN ('revenue', 'expense')
             AND l.status = 'completed'
+            AND l.reversed_at IS NULL
             ${dateFrom && dateTo ? 'AND l.transaction_date BETWEEN $1 AND $2' : dateTo ? 'AND l.transaction_date <= $1' : ''}
           GROUP BY coa.account_category, coa.account_name, coa.account_type
           ORDER BY coa.account_type DESC, coa.account_category ASC
@@ -785,6 +846,7 @@ class ReportsService {
           FROM chart_of_accounts coa
           LEFT JOIN account_ledger l ON coa.account_code = l.account_code 
             AND l.status = 'completed'
+            AND l.reversed_at IS NULL
             ${dateTo ? 'AND l.transaction_date <= $1' : ''}
           WHERE coa.account_type IN ('asset', 'liability', 'equity')
             AND coa.deleted_at IS NULL
@@ -868,7 +930,11 @@ class ReportsService {
       SELECT SUM(balance) as total FROM (
         SELECT c.opening_balance + COALESCE(SUM(l.debit_amount - l.credit_amount), 0) as balance
         FROM customers c
-        LEFT JOIN account_ledger l ON c.id = l.customer_id AND l.status = 'completed' AND l.account_code = '1100' AND l.reversed_at IS NULL
+        LEFT JOIN account_ledger l ON c.id = l.customer_id
+          AND l.status = 'completed'
+          AND l.account_code = '1100'
+          AND l.reversed_at IS NULL
+          AND (l.reference_type IS NULL OR l.reference_type <> 'customer_opening_balance')
         WHERE c.deleted_at IS NULL AND c.is_deleted = FALSE
         ${city ? `AND (
           (jsonb_typeof(c.address) = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(c.address) addr WHERE addr->>'city' = $1))
@@ -955,8 +1021,29 @@ class ReportsService {
     const { query } = require('../config/postgres');
     const { getStartOfDayPakistan, getEndOfDayPakistan } = require('../utils/dateFilter');
 
-    const dateFrom = filters.dateFrom ? getStartOfDayPakistan(filters.dateFrom) : null;
-    const dateTo = filters.dateTo ? getEndOfDayPakistan(filters.dateTo) : null;
+    let resolvedDateFrom = filters.dateFrom || null;
+    let resolvedDateTo = filters.dateTo || null;
+    if ((!resolvedDateFrom || !resolvedDateTo) && filters.month) {
+      const monthMatch = String(filters.month).match(/^(\d{4})-(\d{2})$/);
+      if (monthMatch) {
+        const year = Number(monthMatch[1]);
+        const month = Number(monthMatch[2]);
+        if (Number.isFinite(year) && Number.isFinite(month) && month >= 1 && month <= 12) {
+          const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
+          const monthEndDate = new Date(Date.UTC(year, month, 0));
+          const monthEnd = `${year}-${String(month).padStart(2, '0')}-${String(monthEndDate.getUTCDate()).padStart(2, '0')}`;
+          resolvedDateFrom = resolvedDateFrom || monthStart;
+          resolvedDateTo = resolvedDateTo || monthEnd;
+        }
+      }
+    }
+
+    const dateFrom = resolvedDateFrom ? getStartOfDayPakistan(resolvedDateFrom) : null;
+    const dateTo = resolvedDateTo ? getEndOfDayPakistan(resolvedDateTo) : null;
+    const bankIds = String(filters.bankIds || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
 
     let dateClause = '';
     let params = [];
@@ -969,6 +1056,20 @@ class ReportsService {
     } else if (dateTo) {
       dateClause = 'AND date <= $1';
       params = [dateTo];
+    }
+
+    const dateParams = [...params];
+    let bankParams = [...params];
+
+    let bankIdFilterBankTable = '';
+    let bankIdFilterReceiptTable = '';
+    let bankIdFilterPaymentTable = '';
+    if (bankIds.length > 0) {
+      const bankParamIndex = bankParams.length + 1;
+      bankParams.push(bankIds);
+      bankIdFilterBankTable = `AND b.id = ANY($${bankParamIndex}::uuid[])`;
+      bankIdFilterReceiptTable = `AND bank_id = ANY($${bankParamIndex}::uuid[])`;
+      bankIdFilterPaymentTable = `AND bank_id = ANY($${bankParamIndex}::uuid[])`;
     }
 
     const bankSummarySql = `
@@ -986,6 +1087,7 @@ class ReportsService {
         FROM bank_receipts
         WHERE deleted_at IS NULL
         ${dateClause}
+        ${bankIdFilterReceiptTable}
         GROUP BY bank_id
       ) r ON r.bank_id = b.id
       LEFT JOIN (
@@ -993,13 +1095,15 @@ class ReportsService {
         FROM bank_payments
         WHERE deleted_at IS NULL
         ${dateClause}
+        ${bankIdFilterPaymentTable}
         GROUP BY bank_id
       ) p ON p.bank_id = b.id
       WHERE b.deleted_at IS NULL
+      ${bankIdFilterBankTable}
       ORDER BY b.bank_name ASC, b.account_number ASC
     `;
 
-    const bankResult = await query(bankSummarySql, params);
+    const bankResult = await query(bankSummarySql, bankParams);
     const banks = bankResult.rows.map(row => {
       const openingBalance = parseFloat(row.openingBalance || 0);
       const totalReceipts = parseFloat(row.totalReceipts || 0);
@@ -1019,7 +1123,7 @@ class ReportsService {
         COALESCE((SELECT SUM(amount) FROM cash_receipts WHERE deleted_at IS NULL ${dateClause}), 0) as "totalReceipts",
         COALESCE((SELECT SUM(amount) FROM cash_payments WHERE deleted_at IS NULL ${dateClause}), 0) as "totalPayments"
     `;
-    const cashResult = await query(cashSummarySql, params);
+    const cashResult = await query(cashSummarySql, dateParams);
     const cashRow = cashResult.rows[0] || {};
     const cash = {
       openingBalance: parseFloat(cashRow.openingBalance || 0),
@@ -1039,6 +1143,11 @@ class ReportsService {
       banks,
       cash,
       totals,
+      receiptSummary: {
+        totalBankReceipts: totals.totalBankReceipts,
+        totalCashReceipts: cash.totalReceipts,
+        totalReceipts: totals.totalBankReceipts + cash.totalReceipts
+      },
       dateRange: { from: dateFrom, to: dateTo }
     };
   }
@@ -1069,11 +1178,16 @@ class ReportsService {
             END,
             'N/A'
           ) as city,
+          c.opening_balance as "openingBalance",
           (c.opening_balance + COALESCE(SUM(l.debit_amount - l.credit_amount), 0)) as balance,
           COALESCE(SUM(l.debit_amount), 0) as "totalDebit",
           COALESCE(SUM(l.credit_amount), 0) as "totalCredit"
         FROM customers c
-        LEFT JOIN account_ledger l ON c.id = l.customer_id AND l.status = 'completed' AND l.account_code = '1100' AND l.reversed_at IS NULL
+        LEFT JOIN account_ledger l ON c.id = l.customer_id
+          AND l.status = 'completed'
+          AND l.account_code = '1100'
+          AND l.reversed_at IS NULL
+          AND (l.reference_type IS NULL OR l.reference_type <> 'customer_opening_balance')
         WHERE c.deleted_at IS NULL AND c.is_deleted = FALSE
       `;
       if (city) {
@@ -1097,6 +1211,7 @@ class ReportsService {
             END,
             'N/A'
           ) as city,
+          s.opening_balance as "openingBalance",
           (s.opening_balance + COALESCE(SUM(l.credit_amount - l.debit_amount), 0)) as balance,
           COALESCE(SUM(l.debit_amount), 0) as "totalDebit",
           COALESCE(SUM(l.credit_amount), 0) as "totalCredit"
@@ -1122,12 +1237,13 @@ class ReportsService {
     return {
       data: result.rows.map(row => ({
         ...row,
+        openingBalance: parseFloat(row.openingBalance || 0),
         balance: parseFloat(row.balance),
         totalDebit: parseFloat(row.totalDebit),
         totalCredit: parseFloat(row.totalCredit)
       })),
       partyType,
-      city: city || 'All Countries'
+      city: city || 'All Cities'
     };
   }
 
@@ -1153,10 +1269,10 @@ class ReportsService {
           pi.invoice_date,
           pi.created_at,
           COALESCE(
-            (elem->'product'->>'id')::uuid,
-            (elem->'product'->>'_id')::uuid,
-            (elem->>'product')::uuid,
-            (elem->>'product_id')::uuid
+            elem->'product'->>'id',
+            elem->'product'->>'_id',
+            elem->>'product',
+            elem->>'product_id'
           ) AS product_id,
           (COALESCE((elem->>'quantity')::numeric, (elem->>'qty')::numeric, 0)) AS qty,
           (COALESCE((elem->>'unitCost')::numeric, (elem->>'unit_cost')::numeric, (elem->>'price')::numeric, 0)) AS unit_cost
@@ -1180,8 +1296,8 @@ class ReportsService {
       SUM(ir.qty) AS "totalQuantity",
       SUM(ir.qty * ir.unit_cost) AS "totalAmount"
     FROM item_rows ir
-    LEFT JOIN products p ON p.id = ir.product_id AND (p.is_deleted = FALSE OR p.is_deleted IS NULL)
-    LEFT JOIN product_variants pv ON pv.id = ir.product_id AND pv.deleted_at IS NULL
+    LEFT JOIN products p ON p.id::text = ir.product_id AND (p.is_deleted = FALSE OR p.is_deleted IS NULL)
+    LEFT JOIN product_variants pv ON pv.id::text = ir.product_id AND pv.deleted_at IS NULL
     LEFT JOIN suppliers s ON s.id = ir.supplier_id AND (s.is_deleted = FALSE OR s.is_deleted IS NULL)
     WHERE ir.product_id IS NOT NULL AND ir.supplier_id IS NOT NULL
   `;
@@ -1223,10 +1339,10 @@ class ReportsService {
       const salesSql = `
         SELECT
           COALESCE(
-            (elem->>'product')::uuid,
-            (elem->>'product_id')::uuid,
-            (elem->'product'->>'id')::uuid,
-            (elem->'product'->>'_id')::uuid
+            elem->>'product',
+            elem->>'product_id',
+            elem->'product'->>'id',
+            elem->'product'->>'_id'
           ) AS product_id,
           s.customer_id,
           TRIM(COALESCE(c.name, c.business_name, 'Unknown')) AS customer_name,
@@ -1235,16 +1351,16 @@ class ReportsService {
         CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(COALESCE(s.items, '[]')::jsonb) = 'array' THEN COALESCE(s.items, '[]')::jsonb ELSE '[]'::jsonb END) AS elem
         LEFT JOIN customers c ON c.id = s.customer_id AND (c.is_deleted = FALSE OR c.is_deleted IS NULL)
         WHERE s.deleted_at IS NULL AND s.status != 'cancelled'
-          AND COALESCE((elem->>'product')::uuid, (elem->>'product_id')::uuid, (elem->'product'->>'id')::uuid, (elem->'product'->>'_id')::uuid) IN (${placeholders})
+          AND COALESCE(elem->>'product', elem->>'product_id', elem->'product'->>'id', elem->'product'->>'_id') IN (${placeholders})
         GROUP BY 1, 2, 3
       `;
       const soSql = `
         SELECT
           COALESCE(
-            (elem->>'product')::uuid,
-            (elem->>'product_id')::uuid,
-            (elem->'product'->>'id')::uuid,
-            (elem->'product'->>'_id')::uuid
+            elem->>'product',
+            elem->>'product_id',
+            elem->'product'->>'id',
+            elem->'product'->>'_id'
           ) AS product_id,
           so.customer_id,
           TRIM(COALESCE(c.name, c.business_name, 'Unknown')) AS customer_name,
@@ -1253,7 +1369,7 @@ class ReportsService {
         CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(COALESCE(so.items, '[]'::jsonb)) = 'array' THEN COALESCE(so.items, '[]'::jsonb) ELSE '[]'::jsonb END) AS elem
         LEFT JOIN customers c ON c.id = so.customer_id AND (c.is_deleted = FALSE OR c.is_deleted IS NULL)
         WHERE so.deleted_at IS NULL AND so.status NOT IN ('cancelled', 'draft')
-          AND COALESCE((elem->>'product')::uuid, (elem->>'product_id')::uuid, (elem->'product'->>'id')::uuid, (elem->'product'->>'_id')::uuid) IN (${placeholders})
+          AND COALESCE(elem->>'product', elem->>'product_id', elem->'product'->>'id', elem->'product'->>'_id') IN (${placeholders})
         GROUP BY 1, 2, 3
       `;
       try {

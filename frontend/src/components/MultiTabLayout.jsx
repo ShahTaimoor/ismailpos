@@ -22,6 +22,8 @@ import {
   TrendingUp,
   Receipt,
   ArrowUpDown,
+  ArrowDown,
+  ArrowUp,
   ArrowRight,
   FolderTree,
   Search,
@@ -135,7 +137,7 @@ export const navigation = [
       { name: 'Banks', href: '/banks', icon: Building2, permission: null },
       { name: 'Investors', href: '/investors', icon: TrendingUp, permission: 'view_investors' },
       { name: 'Drop Shipping', href: '/drop-shipping', icon: ArrowRight, permission: 'create_drop_shipping' },
-      { name: 'Countries', href: '/cities', icon: MapPin, permission: 'manage_users' },
+      { name: 'Cities', href: '/cities', icon: MapPin, permission: 'manage_users' },
     ]
   },
 
@@ -144,7 +146,7 @@ export const navigation = [
     icon: Warehouse,
     children: [
       { name: 'Inventory', href: '/inventory', icon: Warehouse, permission: 'view_inventory' },
-      { name: 'Inventory Alerts', href: '/inventory-alerts', icon: AlertTriangle, permission: 'view_inventory' },
+      { name: 'Inventory Alerts', href: '/inventory-alerts', icon: AlertTriangle, permission: 'view_inventory', allowMultiple: true },
       { name: 'Warehouses', href: '/warehouses', icon: Warehouse, permission: 'view_inventory' },
       { name: 'Stock Movements', href: '/stock-movements', icon: ArrowUpDown, permission: 'view_stock_movements' },
       { name: 'Stock Ledger', href: '/stock-ledger', icon: FileText, permission: 'view_reports' },
@@ -166,7 +168,7 @@ export const navigation = [
     icon: BarChart3,
     children: [
       { name: 'P&L Statements', href: '/pl-statements', icon: BarChart3, permission: 'view_pl_statements' },
-      { name: 'Balance Sheets', href: '/balance-sheets', icon: FileText, permission: 'view_balance_sheets' },
+      { name: 'Balance Sheet', href: '/balance-sheet-statement', icon: FileText, permission: 'view_balance_sheets' },
       { name: 'Sales Performance', href: '/sales-performance', icon: TrendingUp, permission: 'view_sales_performance' },
       { name: 'Inventory Reports', href: '/inventory-reports', icon: Warehouse, permission: 'view_inventory_reports' },
       { name: 'Anomaly Detection', href: '/anomaly-detection', icon: AlertTriangle, permission: 'view_anomaly_detection' },
@@ -193,6 +195,38 @@ export const navigation = [
     ]
   }
 ];
+
+/** Migrate legacy parent-only sidebar keys to per-child keys (see Settings → Sidebar). */
+export function migrateSidebarConfig(parsed) {
+  if (!parsed || typeof parsed !== 'object') return {};
+  const next = { ...parsed };
+  navigation.forEach((n) => {
+    if (n.children && n.children.length) {
+      if (next[n.name] === false) {
+        n.children.forEach((child) => {
+          next[child.name] = false;
+        });
+      }
+      delete next[n.name];
+    }
+  });
+  return next;
+}
+
+export function loadSidebarConfig() {
+  const saved = localStorage.getItem('sidebarConfig');
+  if (!saved) return {};
+  try {
+    const parsed = JSON.parse(saved);
+    const migrated = migrateSidebarConfig(parsed);
+    if (JSON.stringify(migrated) !== JSON.stringify(parsed)) {
+      localStorage.setItem('sidebarConfig', JSON.stringify(migrated));
+    }
+    return migrated;
+  } catch {
+    return {};
+  }
+}
 
 // Sidebar header colors per section
 const sidebarHeaderColors = {
@@ -351,18 +385,12 @@ export const MultiTabLayout = ({ children }) => {
   };
 
   // Sidebar visibility state
-  const [sidebarConfig, setSidebarConfig] = useState(() => {
-    const saved = localStorage.getItem('sidebarConfig');
-    return saved ? JSON.parse(saved) : {};
-  });
+  const [sidebarConfig, setSidebarConfig] = useState(() => loadSidebarConfig());
 
   // Listener for sidebar configuration changes
   useEffect(() => {
     const handleSidebarChange = () => {
-      const saved = localStorage.getItem('sidebarConfig');
-      if (saved) {
-        setSidebarConfig(JSON.parse(saved));
-      }
+      setSidebarConfig(loadSidebarConfig());
     };
 
     window.addEventListener('sidebarConfigChanged', handleSidebarChange);
@@ -615,20 +643,20 @@ export const MultiTabLayout = ({ children }) => {
             <div className="hidden lg:flex items-center gap-1 xl:gap-1.5 2xl:gap-2 overflow-x-auto flex-1 min-w-0 scrollbar-hide overflow-y-visible">
               <button
                 onClick={() => handleNavigationClick({ href: '/cash-receiving', name: 'Cash Receiving' })}
-                className="bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
+                className="bg-teal-50 text-teal-700 border border-teal-200 hover:bg-teal-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
               >
-                <span className="inline-flex items-center justify-center w-5 h-5 xl:w-6 xl:h-6 rounded bg-emerald-200/60 flex-shrink-0">
-                  <Receipt className="h-2.5 w-2.5 xl:h-3.5 xl:w-3.5 text-emerald-700" />
+                <span className="inline-flex items-center justify-center w-5 h-5 xl:w-6 xl:h-6 rounded bg-teal-200/60 flex-shrink-0">
+                  <Receipt className="h-2.5 w-2.5 xl:h-3.5 xl:w-3.5 text-teal-700" />
                 </span>
-                <span>Cash Receiving</span>
+                <span>Multiple Cash Receipt</span>
               </button>
               {sidebarConfig['Cash Receipts'] !== false && (
                 <button
                   onClick={() => handleNavigationClick({ href: '/cash-receipts', name: 'Cash Receipts' })}
-                  className="bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
+                  className="bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
                 >
-                  <span className="inline-flex items-center justify-center w-5 h-5 xl:w-6 xl:h-6 rounded bg-emerald-200/60 flex-shrink-0">
-                    <Receipt className="h-2.5 w-2.5 xl:h-3.5 xl:w-3.5 text-emerald-700" />
+                  <span className="inline-flex items-center justify-center w-5 h-5 xl:w-6 xl:h-6 rounded bg-green-200/60 flex-shrink-0">
+                    <ArrowDown className="h-2.5 w-2.5 xl:h-3.5 xl:w-3.5 text-green-700" />
                   </span>
                   <span className="hidden sm:inline">Cash Receipt</span>
                   <span className="sm:hidden">Cash R.</span>
@@ -637,10 +665,10 @@ export const MultiTabLayout = ({ children }) => {
               {sidebarConfig['Bank Receipts'] !== false && (
                 <button
                   onClick={() => handleNavigationClick({ href: '/bank-receipts', name: 'Bank Receipts' })}
-                  className="bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
+                  className="bg-cyan-50 text-cyan-700 border border-cyan-200 hover:bg-cyan-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
                 >
-                  <span className="inline-flex items-center justify-center w-5 h-5 xl:w-6 xl:h-6 rounded bg-emerald-200/60 flex-shrink-0">
-                    <Receipt className="h-2.5 w-2.5 xl:h-3.5 xl:w-3.5 text-emerald-700" />
+                  <span className="inline-flex items-center justify-center w-5 h-5 xl:w-6 xl:h-6 rounded bg-cyan-200/60 flex-shrink-0">
+                    <ArrowDown className="h-2.5 w-2.5 xl:h-3.5 xl:w-3.5 text-cyan-700" />
                   </span>
                   <span className="hidden sm:inline">Bank Receipt</span>
                   <span className="sm:hidden">Bank R.</span>
@@ -649,10 +677,10 @@ export const MultiTabLayout = ({ children }) => {
               {sidebarConfig['Cash Payments'] !== false && (
                 <button
                   onClick={() => handleNavigationClick({ href: '/cash-payments', name: 'Cash Payments' })}
-                  className="bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
+                  className="bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
                 >
-                  <span className="inline-flex items-center justify-center w-5 h-5 xl:w-6 xl:h-6 rounded bg-blue-200/60 flex-shrink-0">
-                    <ArrowUpDown className="h-2.5 w-2.5 xl:h-3.5 xl:w-3.5 text-blue-700" />
+                  <span className="inline-flex items-center justify-center w-5 h-5 xl:w-6 xl:h-6 rounded bg-indigo-200/60 flex-shrink-0">
+                    <ArrowUp className="h-2.5 w-2.5 xl:h-3.5 xl:w-3.5 text-indigo-700" />
                   </span>
                   <span className="hidden sm:inline">Cash Payment</span>
                   <span className="sm:hidden">Cash P.</span>
@@ -661,10 +689,10 @@ export const MultiTabLayout = ({ children }) => {
               {sidebarConfig['Bank Payments'] !== false && (
                 <button
                   onClick={() => handleNavigationClick({ href: '/bank-payments', name: 'Bank Payments' })}
-                  className="bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
+                  className="bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
                 >
-                  <span className="inline-flex items-center justify-center w-5 h-5 xl:w-6 xl:h-6 rounded bg-blue-200/60 flex-shrink-0">
-                    <ArrowUpDown className="h-2.5 w-2.5 xl:h-3.5 xl:w-3.5 text-blue-700" />
+                  <span className="inline-flex items-center justify-center w-5 h-5 xl:w-6 xl:h-6 rounded bg-violet-200/60 flex-shrink-0">
+                    <ArrowUp className="h-2.5 w-2.5 xl:h-3.5 xl:w-3.5 text-violet-700" />
                   </span>
                   <span className="hidden sm:inline">Bank Payment</span>
                   <span className="sm:hidden">Bank P.</span>

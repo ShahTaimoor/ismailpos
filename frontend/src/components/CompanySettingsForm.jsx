@@ -12,7 +12,6 @@ import {
 } from '../store/services/settingsApi';
 import { LoadingSpinner, LoadingButton } from './LoadingSpinner';
 import { handleApiError } from '../utils/errorHandler';
-import { OptimizedImage } from './OptimizedImage';
 
 const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
@@ -222,9 +221,10 @@ export function CompanySettingsForm() {
           <div className="flex-shrink-0">
             {displayPreview ? (
               <div className="h-28 w-28 overflow-hidden rounded-lg border border-gray-200 bg-gray-50 flex items-center justify-center">
-                <OptimizedImage
+                <img
                   src={displayPreview}
                   alt="Company logo preview"
+                  crossOrigin="anonymous"
                   className="max-h-full max-w-full object-contain"
                 />
               </div>

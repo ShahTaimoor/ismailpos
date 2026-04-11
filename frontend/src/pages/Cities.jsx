@@ -16,7 +16,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { DeleteConfirmationDialog } from '../components/ConfirmationDialog';
 import { useDeleteConfirmation } from '../hooks/useConfirmation';
-import CityImportExport from '../components/CityImportExport';
+
 import BaseModal from '../components/BaseModal';
 import {
   useGetCitiesQuery,
@@ -78,7 +78,7 @@ const CityFormModal = ({ city, onSave, onCancel, isSubmitting }) => {
     e.preventDefault();
     
     if (!formData.name.trim()) {
-      toast.error('Country name is required');
+      toast.error('City name is required');
       return;
     }
 
@@ -89,7 +89,7 @@ const CityFormModal = ({ city, onSave, onCancel, isSubmitting }) => {
     <BaseModal
       isOpen={true}
       onClose={onCancel}
-      title={city ? 'Edit Country' : 'Add New Country'}
+      title={city ? 'Edit City' : 'Add New City'}
       maxWidth="md"
       variant="centered"
       contentClassName="p-6"
@@ -97,7 +97,7 @@ const CityFormModal = ({ city, onSave, onCancel, isSubmitting }) => {
       <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Listed country
+                Country
               </label>
               <select
                 value={formData.country}
@@ -114,13 +114,13 @@ const CityFormModal = ({ city, onSave, onCancel, isSubmitting }) => {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Country *
+                City Name *
               </label>
               <Input
                 type="text"
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                placeholder="Enter country name"
+                placeholder="Enter city name"
                 required
               />
             </div>
@@ -176,7 +176,7 @@ const CityFormModal = ({ city, onSave, onCancel, isSubmitting }) => {
                 variant="default"
                 disabled={isSubmitting}
               >
-                {isSubmitting ? 'Saving...' : (city ? 'Update Country' : 'Add Country')}
+                {isSubmitting ? 'Saving...' : (city ? 'Update City' : 'Add City')}
               </Button>
             </div>
           </form>
@@ -215,23 +215,23 @@ export const Cities = () => {
       updateCity({ id: selectedCity.id || selectedCity._id, ...data })
         .unwrap()
         .then(() => {
-          toast.success('Country updated successfully');
+          toast.success('City updated successfully');
           setIsModalOpen(false);
           setSelectedCity(null);
         })
         .catch((err) => {
-          toast.error(err?.data?.message || 'Failed to update country');
+          toast.error(err?.data?.message || 'Failed to update city');
         });
     } else {
       createCity(data)
         .unwrap()
         .then(() => {
-          toast.success('Country created successfully');
+          toast.success('City created successfully');
           setIsModalOpen(false);
           setSelectedCity(null);
         })
         .catch((err) => {
-          toast.error(err?.data?.message || 'Failed to create country');
+          toast.error(err?.data?.message || 'Failed to create city');
         });
     }
   };
@@ -242,13 +242,13 @@ export const Cities = () => {
   };
 
   const handleDelete = (city) => {
-    const cityName = city.name || 'this country';
-    confirmDelete(cityName, 'country', async () => {
+    const cityName = city.name || 'this city';
+    confirmDelete(cityName, 'city', async () => {
       try {
         await deleteCity(city.id || city._id).unwrap();
-        toast.success('Country deleted successfully');
+        toast.success('City deleted successfully');
       } catch (err) {
-        toast.error(err?.data?.message || 'Failed to delete country');
+        toast.error(err?.data?.message || 'Failed to delete city');
       }
     });
   };
@@ -270,8 +270,8 @@ export const Cities = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between space-y-4 sm:space-y-0">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Countries</h1>
-          <p className="text-gray-600">Manage countries for customer and supplier addresses</p>
+          <h1 className="text-2xl font-bold text-gray-900">Cities</h1>
+          <p className="text-gray-600">Manage cities for customer and supplier addresses</p>
         </div>
         <div className="flex-shrink-0">
           <Button
@@ -281,16 +281,12 @@ export const Cities = () => {
             className="w-full sm:w-auto"
           >
             <Plus className="h-4 w-4 mr-2" />
-            Add New Country
+            Add New City
           </Button>
         </div>
       </div>
 
-      {/* Import/Export Section */}
-      <CityImportExport 
-        onImportComplete={() => refetch()}
-        filters={queryParams}
-      />
+
 
       {/* Filters */}
       <div className="bg-white rounded-lg shadow p-4">
@@ -299,7 +295,7 @@ export const Cities = () => {
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
             <Input
               type="text"
-              placeholder="Search countries..."
+              placeholder="Search cities..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="pl-10 w-full"
@@ -311,7 +307,7 @@ export const Cities = () => {
               onChange={(e) => setIsActiveFilter(e.target.value)}
               className="input w-full"
             >
-              <option value="all">All Countries</option>
+              <option value="all">All Cities</option>
               <option value="active">Active Only</option>
               <option value="inactive">Inactive Only</option>
             </select>
@@ -336,7 +332,7 @@ export const Cities = () => {
           <LoadingSpinner />
         ) : error ? (
           <div className="p-6 text-center text-red-600">
-            <p>Error loading countries: {error?.data?.message || error?.message}</p>
+            <p>Error loading cities: {error?.data?.message || error?.message}</p>
             <Button
               onClick={() => refetch()}
               variant="secondary"
@@ -349,7 +345,7 @@ export const Cities = () => {
           </div>
         ) : cities.length === 0 ? (
           <div className="p-6 text-center text-gray-500">
-            <p>No countries found. Add your first country to get started.</p>
+            <p>No cities found. Add your first city to get started.</p>
             <p className="text-sm mt-2">Total in database: {pagination.total || 0}</p>
             <Button
               onClick={() => refetch()}
@@ -367,13 +363,13 @@ export const Cities = () => {
               <thead className="bg-gray-50">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Country
+                    City Name
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     State
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Listed country
+                    Country
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Status
@@ -441,7 +437,7 @@ export const Cities = () => {
           <div className="text-sm text-gray-700">
             Showing {((pagination.page - 1) * pagination.limit) + 1} to{' '}
             {Math.min(pagination.page * pagination.limit, pagination.total)} of{' '}
-            {pagination.total} countries
+            {pagination.total} cities
           </div>
         </div>
       )}
@@ -464,8 +460,8 @@ export const Cities = () => {
         isOpen={confirmation.isOpen}
         onClose={handleCancel}
         onConfirm={handleConfirm}
-        itemName={confirmation.message?.match(/"([^"]*)"/)?.[1] || 'this country'}
-        itemType="country"
+        itemName={confirmation.message?.match(/"([^"]*)"/)?.[1] || 'this city'}
+        itemType="city"
         isLoading={confirmation.isLoading}
       />
     </div>

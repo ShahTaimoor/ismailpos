@@ -48,7 +48,6 @@ import { formatCurrency, formatDate } from '../utils/formatters';
 import { LoadingSpinner, LoadingButton, LoadingCard, LoadingGrid, LoadingPage, LoadingInline } from '../components/LoadingSpinner';
 import PeriodComparisonSection from '../components/PeriodComparisonSection';
 import PeriodComparisonCard from '../components/PeriodComparisonCard';
-import { OptimizedImage } from '../components/OptimizedImage';
 import ComparisonChart from '../components/ComparisonChart';
 import { usePeriodComparison } from '../hooks/usePeriodComparison';
 import DateFilter from '../components/DateFilter';
@@ -465,7 +464,7 @@ export const Dashboard = () => {
   ];
 
   const salesInvoicesColumns = [
-    { key: 'order_number', label: 'P/I No.:', sortable: true, render: (val, row) => val || row.orderNumber || row.invoiceNo || '-' },
+    { key: 'order_number', label: 'Order Number', sortable: true, render: (val, row) => val || row.orderNumber || row.invoiceNo || '-' },
     { key: 'customer', label: 'Customer', sortable: true, render: (val, row) => row.customer?.businessName || row.customer?.business_name || row.customerInfo?.businessName || row.customerInfo?.business_name || row.customerName || row.customer?.name || row.customerInfo?.name || '-' },
     { key: 'sale_date', label: 'Date', sortable: true, format: 'date', render: (val, row) => formatDate(val || row.createdAt || row.orderDate || row.date) },
     { key: 'status', label: 'Status', sortable: true },
@@ -645,9 +644,10 @@ export const Dashboard = () => {
         <div className="min-h-[70vh] flex flex-col items-center justify-center bg-white rounded-xl border border-gray-200 shadow-sm p-8">
           <div className="flex flex-col items-center gap-8 w-full text-center">
             {companyLogo ? (
-              <OptimizedImage
+              <img
                 src={companyLogo}
                 alt={companyName || 'Company logo'}
+                crossOrigin="anonymous"
                 className="max-h-[400px] md:max-h-[500px] w-auto max-w-full object-contain transition-all duration-500 hover:scale-105"
               />
             ) : (

@@ -3,8 +3,6 @@ import { Package, Edit, Trash2, Barcode, TrendingUp } from 'lucide-react';
 import { Checkbox } from './Checkbox';
 import { isLowStock, getExpiryStatus } from '../utils/productHelpers';
 
-import { OptimizedImage } from './OptimizedImage';
-
 export const ProductList = ({
   products,
   searchTerm,
@@ -12,9 +10,13 @@ export const ProductList = ({
   onEdit,
   onDelete,
   onManageInvestors,
-  onGenerateBarcode
+  onGenerateBarcode,
+  showCostPrice = true // New prop
 }) => {
   const [showImages, setShowImages] = useState(localStorage.getItem('showProductImagesUI') !== 'false');
+  const [showHsCodeColumn, setShowHsCodeColumn] = useState(
+    () => localStorage.getItem('showProductHsCodeColumn') !== 'false'
+  );
 
   useEffect(() => {
     const handleStorageChange = () => {
@@ -22,6 +24,14 @@ export const ProductList = ({
     };
     window.addEventListener('productImagesConfigChanged', handleStorageChange);
     return () => window.removeEventListener('productImagesConfigChanged', handleStorageChange);
+  }, []);
+
+  useEffect(() => {
+    const handleHsCodeColumn = () => {
+      setShowHsCodeColumn(localStorage.getItem('showProductHsCodeColumn') !== 'false');
+    };
+    window.addEventListener('productHsCodeColumnConfigChanged', handleHsCodeColumn);
+    return () => window.removeEventListener('productHsCodeColumnConfigChanged', handleHsCodeColumn);
   }, []);
   if (products.length === 0) {
     return (
@@ -36,27 +46,39 @@ export const ProductList = ({
   }
 
   return (
-    <div className="w-full overflow-hidden">
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+    <div className="w-full min-w-0 max-w-full">
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-x-auto max-w-full">
         {/* Desktop Table Header - Hidden on mobile/tablet - Responsive scaling */}
-        <div className="hidden lg:block bg-gray-50 border-b border-gray-200">
+        <div className="hidden lg:block bg-gray-50 border-b border-gray-200 min-w-[960px]">
           <div className="px-3 py-2 xl:px-4 xl:py-3 2xl:px-6 2xl:py-4">
             <div className="grid grid-cols-12 gap-2 xl:gap-3 2xl:gap-4 items-center">
+              <div className="col-span-1">
+                <h3 className="text-[10px] xl:text-xs 2xl:text-sm font-medium text-gray-700">S.No</h3>
+              </div>
               <div className="col-span-1">
                 <Checkbox
                   checked={bulkOps.isSelectAll}
                   onChange={() => bulkOps.toggleSelectAll(products)}
                 />
               </div>
-              <div className="col-span-5 xl:col-span-3">
+              <div
+                className={`min-w-0 ${showHsCodeColumn ? 'col-span-2 xl:col-span-2' : 'col-span-3 xl:col-span-3'}`}
+              >
                 <h3 className="text-[10px] xl:text-xs 2xl:text-sm font-medium text-gray-700">Product Name</h3>
               </div>
+              {showHsCodeColumn && (
+                <div className="col-span-1 min-w-0">
+                  <h3 className="text-[10px] xl:text-xs 2xl:text-sm font-medium text-gray-700">HS Code</h3>
+                </div>
+              )}
               <div className="col-span-1">
                 <h3 className="text-[10px] xl:text-xs 2xl:text-sm font-medium text-gray-700">Stock</h3>
               </div>
-              <div className="col-span-1">
-                <h3 className="text-[10px] xl:text-xs 2xl:text-sm font-medium text-gray-700">Cost</h3>
-              </div>
+              {showCostPrice && (
+                <div className="col-span-1">
+                  <h3 className="text-[10px] xl:text-xs 2xl:text-sm font-medium text-gray-700">Cost</h3>
+                </div>
+              )}
               <div className="col-span-1">
                 <h3 className="text-[10px] xl:text-xs 2xl:text-sm font-medium text-gray-700">Retail</h3>
               </div>
@@ -69,7 +91,7 @@ export const ProductList = ({
               <div className="col-span-1">
                 <h3 className="text-[10px] xl:text-xs 2xl:text-sm font-medium text-gray-700">Status</h3>
               </div>
-              <div className="col-span-1 xl:col-span-2">
+              <div className="col-span-1">
                 <h3 className="text-[10px] xl:text-xs 2xl:text-sm font-medium text-gray-700">Actions</h3>
               </div>
             </div>
@@ -89,57 +111,81 @@ export const ProductList = ({
         </div>
 
         <div className="divide-y divide-gray-200">
-          {products.map((product) => (
-            <div key={product._id}>
-              {/* Desktop Table Row - Responsive scaling */}
-              <div className="hidden lg:block px-3 py-2 xl:px-4 xl:py-3 2xl:px-6 2xl:py-4 hover:bg-gray-50 transition-colors">
-                <div className="grid grid-cols-12 gap-2 xl:gap-3 2xl:gap-4 items-center">
-                  <div className="col-span-1">
-                    <Checkbox
-                      checked={bulkOps.isSelected(product._id)}
-                      onChange={() => bulkOps.toggleSelection(product._id)}
-                    />
-                  </div>
-                  <div className="col-span-5 xl:col-span-3 min-w-0">
-                    <div className="flex items-center space-x-1.5 xl:space-x-2 2xl:space-x-3">
-                      {showImages ? (
-                        product.imageUrl ? (
-                          <OptimizedImage 
-                            src={product.imageUrl} 
-                            alt={product.name} 
-                            className="h-6 w-6 xl:h-8 xl:w-8 2xl:h-10 2xl:w-10 object-cover rounded-md flex-shrink-0 border border-gray-200" 
-                          />
-                        ) : (
-                          <Package className="h-4 w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-gray-400 flex-shrink-0" />
-                        )
-                      ) : null}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1 xl:gap-1.5 2xl:gap-2 flex-wrap">
-                          <h3 className="text-[10px] xl:text-xs 2xl:text-sm font-medium text-gray-900 truncate">
-                            {product.name}
-                          </h3>
-                          {product.expiryDate && (() => {
-                            const expiryStatus = getExpiryStatus(product);
-                            if (expiryStatus?.status === 'expired') {
-                              return (
-                                <span className="inline-flex items-center px-1 xl:px-1.5 py-0.5 rounded text-[10px] xl:text-xs font-medium bg-red-100 text-red-800 flex-shrink-0" title={`Expired ${expiryStatus.days} day${expiryStatus.days > 1 ? 's' : ''} ago`}>
-                                  Expired
-                                </span>
-                              );
-                            } else if (expiryStatus?.status === 'expiring_soon') {
-                              return (
-                                <span className="inline-flex items-center px-1 xl:px-1.5 py-0.5 rounded text-[10px] xl:text-xs font-medium bg-yellow-100 text-yellow-800 flex-shrink-0" title={`Expires in ${expiryStatus.days} day${expiryStatus.days > 1 ? 's' : ''}`}>
-                                  Soon
-                                </span>
-                              );
-                            }
-                            return null;
-                          })()}
-                        </div>
+            {products.map((product, idx) => (
+              <div key={product._id}>
+                {/* Desktop Table Row - Responsive scaling */}
+                <div className="hidden lg:block px-3 py-2 xl:px-4 xl:py-3 2xl:px-6 2xl:py-4 hover:bg-gray-50 transition-colors min-w-[960px]">
+                  <div className="grid grid-cols-12 gap-2 xl:gap-3 2xl:gap-4 items-center">
+                    <div className="col-span-1 text-[10px] xl:text-xs 2xl:text-sm font-medium text-gray-500">
+                      {idx + 1}
+                    </div>
+                    <div className="col-span-1">
+                      <Checkbox
+                        checked={bulkOps.isSelected(product._id)}
+                        onChange={() => bulkOps.toggleSelection(product._id)}
+                      />
+                    </div>
+                    <div
+                      className={`min-w-0 ${showHsCodeColumn ? 'col-span-2 xl:col-span-2' : 'col-span-3 xl:col-span-3'}`}
+                    >
+                      <div className="flex items-center space-x-1.5 xl:space-x-2 2xl:space-x-3">
+                        {showImages ? (
+                          product.imageUrl ? (
+                            <img 
+                              src={product.imageUrl} 
+                              alt={product.name} 
+                              crossOrigin="anonymous"
+                              className="h-6 w-6 xl:h-8 xl:w-8 2xl:h-10 2xl:w-10 object-cover rounded-md flex-shrink-0 border border-gray-200" 
+                            />
+                          ) : (
+                            <Package className="h-4 w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-gray-400 flex-shrink-0" />
+                          )
+                        ) : null}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1 xl:gap-1.5 2xl:gap-2 flex-wrap">
+                            <h3 className="text-[10px] xl:text-xs 2xl:text-sm font-medium text-gray-900 truncate">
+                              {product.name}
+                            </h3>
+                            {product.expiryDate && (() => {
+                              const expiryStatus = getExpiryStatus(product);
+                              if (expiryStatus?.status === 'expired') {
+                                return (
+                                  <span className="inline-flex items-center px-1 xl:px-1.5 py-0.5 rounded text-[10px] xl:text-xs font-medium bg-red-100 text-red-800 flex-shrink-0" title={`Expired ${expiryStatus.days} day${expiryStatus.days > 1 ? 's' : ''} ago`}>
+                                    Expired
+                                  </span>
+                                );
+                              } else if (expiryStatus?.status === 'expiring_soon') {
+                                return (
+                                  <span className="inline-flex items-center px-1 xl:px-1.5 py-0.5 rounded text-[10px] xl:text-xs font-medium bg-yellow-100 text-yellow-800 flex-shrink-0" title={`Expires in ${expiryStatus.days} day${expiryStatus.days > 1 ? 's' : ''}`}>
+                                    Soon
+                                  </span>
+                                );
+                              }
+                              return null;
+                            })()}
+                          </div>
+                          {(product.importRefNo || product.gdNumber || product.invoiceRef) && (
+                            <p className="text-[10px] xl:text-xs text-gray-500 truncate mt-0.5">
+                              {product.importRefNo ? `IMP: ${product.importRefNo}` : ''}
+                              {product.gdNumber ? `${product.importRefNo ? ' | ' : ''}GD: ${product.gdNumber}` : ''}
+                              {product.invoiceRef ? `${(product.importRefNo || product.gdNumber) ? ' | ' : ''}INV: ${product.invoiceRef}` : ''}
+                            </p>
+                          )}
 
+                        </div>
                       </div>
                     </div>
-                  </div>
+
+                  {showHsCodeColumn && (
+                    <div className="col-span-1 min-w-0">
+                      <p
+                        className="text-[10px] xl:text-xs 2xl:text-sm text-gray-600 truncate font-mono"
+                        title={product.hsCode ? 'Harmonized System (HS) code' : undefined}
+                      >
+                        {product.hsCode || '—'}
+                      </p>
+                    </div>
+                  )}
 
                   <div className="col-span-1">
                     <p className={`text-[10px] xl:text-xs 2xl:text-sm font-medium ${isLowStock(product) ? 'text-danger-600' : 'text-gray-600'
@@ -151,9 +197,11 @@ export const ProductList = ({
                     )}
                   </div>
 
-                  <div className="col-span-1">
-                    <p className="text-[10px] xl:text-xs 2xl:text-sm text-gray-600">{Math.round(product.pricing?.cost || 0)}</p>
-                  </div>
+                  {showCostPrice && (
+                    <div className="col-span-1">
+                      <p className="text-[10px] xl:text-xs 2xl:text-sm text-gray-600">{Math.round(product.pricing?.cost || 0)}</p>
+                    </div>
+                  )}
 
                   <div className="col-span-1">
                     <p className="text-[10px] xl:text-xs 2xl:text-sm text-gray-600">{Math.round(product.pricing?.retail || 0)}</p>
@@ -174,32 +222,36 @@ export const ProductList = ({
                     </span>
                   </div>
 
-                  <div className="col-span-1 xl:col-span-2">
-                    <div className="flex items-center space-x-1 xl:space-x-1.5 2xl:space-x-2">
+                  <div className="col-span-1 min-w-0 flex flex-col items-end gap-1">
+                    <div className="flex flex-nowrap items-center justify-end gap-0.5 xl:gap-1 shrink-0">
                       <button
+                        type="button"
                         onClick={() => onGenerateBarcode(product)}
-                        className="text-green-600 hover:text-green-800 p-0.5 xl:p-1"
+                        className="text-green-600 hover:text-green-800 p-0.5 xl:p-1 shrink-0 rounded"
                         title="Generate Barcode"
                       >
                         <Barcode className="h-3.5 w-3.5 xl:h-4 xl:w-4 2xl:h-5 2xl:w-5" />
                       </button>
                       <button
+                        type="button"
                         onClick={() => onManageInvestors(product)}
-                        className="text-blue-600 hover:text-blue-800 p-0.5 xl:p-1"
+                        className="text-blue-600 hover:text-blue-800 p-0.5 xl:p-1 shrink-0 rounded"
                         title="Manage Investors"
                       >
                         <TrendingUp className="h-3.5 w-3.5 xl:h-4 xl:w-4 2xl:h-5 2xl:w-5" />
                       </button>
                       <button
+                        type="button"
                         onClick={() => onEdit(product)}
-                        className="text-primary-600 hover:text-primary-800 p-0.5 xl:p-1"
+                        className="text-primary-600 hover:text-primary-800 p-0.5 xl:p-1 shrink-0 rounded"
                         title="Edit Product"
                       >
                         <Edit className="h-3.5 w-3.5 xl:h-4 xl:w-4 2xl:h-5 2xl:w-5" />
                       </button>
                       <button
+                        type="button"
                         onClick={() => onDelete(product)}
-                        className="text-danger-600 hover:text-danger-800 p-0.5 xl:p-1"
+                        className="text-danger-600 hover:text-danger-800 p-0.5 xl:p-1 shrink-0 rounded"
                         title="Delete Product"
                       >
                         <Trash2 className="h-3.5 w-3.5 xl:h-4 xl:w-4 2xl:h-5 2xl:w-5" />
@@ -227,9 +279,10 @@ export const ProductList = ({
                     <div className="flex items-start space-x-2 xl:space-x-3">
                       {showImages ? (
                         product.imageUrl ? (
-                          <OptimizedImage 
+                          <img 
                             src={product.imageUrl} 
                             alt={product.name} 
+                            crossOrigin="anonymous"
                             className="h-8 w-8 xl:h-10 xl:w-10 object-cover rounded-md flex-shrink-0 border border-gray-200 mt-0.5" 
                           />
                         ) : (
@@ -240,9 +293,12 @@ export const ProductList = ({
                         {/* Product Name and Status */}
                         <div className="flex items-start justify-between gap-1.5 xl:gap-2 mb-1.5 xl:mb-2">
                           <div className="flex-1 min-w-0">
-                            <h3 className="text-sm xl:text-base font-medium text-gray-900 truncate">
-                              {product.name}
-                            </h3>
+                            <div className="flex items-center gap-2 mb-0.5">
+                              <span className="text-[10px] font-semibold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded flex-shrink-0">#{idx + 1}</span>
+                              <h3 className="text-sm xl:text-base font-medium text-gray-900 truncate">
+                                {product.name}
+                              </h3>
+                            </div>
 
                           </div>
                           <span className={`badge badge-sm flex-shrink-0 ${product.status === 'active' ? 'badge-success' : 'badge-gray'
@@ -256,6 +312,14 @@ export const ProductList = ({
 
                         {/* Product Details Grid */}
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 xl:gap-3 mb-2 xl:mb-3">
+                          {showHsCodeColumn && (
+                            <div className="col-span-2 sm:col-span-1">
+                              <p className="text-[10px] xl:text-xs text-gray-500 mb-0.5">HS Code</p>
+                              <p className="text-xs xl:text-sm font-semibold text-gray-900 truncate font-mono" title="HS code (customs classification)">
+                                {product.hsCode || '—'}
+                              </p>
+                            </div>
+                          )}
                           <div>
                             <p className="text-[10px] xl:text-xs text-gray-500 mb-0.5">Stock</p>
                             <p className={`text-xs xl:text-sm font-semibold ${isLowStock(product) ? 'text-danger-600' : 'text-gray-900'
@@ -266,12 +330,14 @@ export const ProductList = ({
                               )}
                             </p>
                           </div>
-                          <div>
-                            <p className="text-[10px] xl:text-xs text-gray-500 mb-0.5">Cost</p>
-                            <p className="text-xs xl:text-sm font-semibold text-gray-900">
-                              {Math.round(product.pricing?.cost || 0)}
-                            </p>
-                          </div>
+                          {showCostPrice && (
+                            <div>
+                              <p className="text-[10px] xl:text-xs text-gray-500 mb-0.5">Cost</p>
+                              <p className="text-xs xl:text-sm font-semibold text-gray-900">
+                                {Math.round(product.pricing?.cost || 0)}
+                              </p>
+                            </div>
+                          )}
                           <div>
                             <p className="text-[10px] xl:text-xs text-gray-500 mb-0.5">Retail</p>
                             <p className="text-xs xl:text-sm font-semibold text-gray-900">
@@ -290,6 +356,16 @@ export const ProductList = ({
                               {product.category?.name || '-'}
                             </p>
                           </div>
+                          {(product.importRefNo || product.gdNumber || product.invoiceRef) && (
+                            <div className="col-span-2 sm:col-span-3">
+                              <p className="text-[10px] xl:text-xs text-gray-500 mb-0.5">Import References</p>
+                              <p className="text-xs xl:text-sm font-semibold text-gray-900 truncate">
+                                {product.importRefNo ? `IMP: ${product.importRefNo}` : ''}
+                                {product.gdNumber ? `${product.importRefNo ? ' | ' : ''}GD: ${product.gdNumber}` : ''}
+                                {product.invoiceRef ? `${(product.importRefNo || product.gdNumber) ? ' | ' : ''}INV: ${product.invoiceRef}` : ''}
+                              </p>
+                            </div>
+                          )}
                         </div>
 
                         {/* Expiry Date Badge */}

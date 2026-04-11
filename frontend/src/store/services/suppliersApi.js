@@ -132,50 +132,17 @@ export const suppliersApi = api.injectEndpoints({
       }),
       providesTags: [{ type: 'Suppliers', id: 'SEARCH' }],
     }),
-    exportExcel: builder.mutation({
-      query: (params) => ({
-        url: 'suppliers/export/excel',
+    bulkCreateSuppliers: builder.mutation({
+      query: (suppliers) => ({
+        url: 'suppliers/bulk-create',
         method: 'post',
-        data: params,
+        data: { suppliers },
       }),
-    }),
-    importExcel: builder.mutation({
-      query: (file) => {
-        const formData = new FormData();
-        formData.append('file', file);
-        return {
-          url: 'suppliers/import/excel',
-          method: 'post',
-          data: formData,
-        };
-      },
       invalidatesTags: [
         { type: 'Suppliers', id: 'LIST' },
         { type: 'Suppliers', id: 'ACTIVE' },
         { type: 'Suppliers', id: 'SEARCH' },
-        { type: 'Suppliers', id: 'CHECK' },
-        { type: 'Accounting' },
-        { type: 'Reports', id: 'PARTY_BALANCE' },
-        { type: 'Reports', id: 'PURCHASE_BY_SUPPLIER' },
-        { type: 'Reports', id: 'SUMMARY_CARDS' },
-        { type: 'Reports', id: 'FINANCIAL_REPORT' },
       ],
-    }),
-    downloadTemplate: builder.query({
-      query: () => ({
-        url: 'suppliers/template/excel',
-        method: 'get',
-        responseType: 'blob',
-      }),
-      providesTags: [{ type: 'Suppliers', id: 'TEMPLATE' }],
-    }),
-    downloadExportFile: builder.query({
-      query: (filename) => ({
-        url: `suppliers/download/${filename}`,
-        method: 'get',
-        responseType: 'blob',
-      }),
-      providesTags: [{ type: 'Suppliers', id: 'EXPORT' }],
     }),
   }),
   overrideExisting: false,
@@ -194,10 +161,5 @@ export const {
   useLazyGetSupplierQuery,
   useSearchSuppliersQuery,
   useLazySearchSuppliersQuery,
-  useExportExcelMutation,
-  useImportExcelMutation,
-  useDownloadTemplateQuery,
-  useLazyDownloadTemplateQuery,
-  useLazyDownloadExportFileQuery,
+  useBulkCreateSuppliersMutation,
 } = suppliersApi;
-

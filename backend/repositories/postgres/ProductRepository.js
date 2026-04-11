@@ -1,4 +1,6 @@
 const { query } = require('../../config/postgres');
+const inventoryBalanceRepository = require('./InventoryBalanceRepository');
+
 
 function rowToProduct(row) {
   if (!row) return null;
@@ -15,7 +17,14 @@ function rowToProduct(row) {
     updatedBy: row.updated_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    imageUrl: row.image_url
+    imageUrl: row.image_url,
+    hsCode: row.hs_code ?? null,
+    countryOfOrigin: row.country_of_origin ?? null,
+    netWeightKg: row.net_weight_kg != null ? parseFloat(row.net_weight_kg) : null,
+    grossWeightKg: row.gross_weight_kg != null ? parseFloat(row.gross_weight_kg) : null,
+    importRefNo: row.import_ref_no ?? null,
+    gdNumber: row.gd_number ?? null,
+    invoiceRef: row.invoice_ref ?? null
   };
 }
 
@@ -23,16 +32,22 @@ function rowToProduct(row) {
  * PostgreSQL Product repository - use for product data when migrating off MongoDB.
  */
 class ProductRepository {
-  async findById(id) {
-    const result = await query(
-      'SELECT * FROM products WHERE id = $1 AND (is_deleted = FALSE OR is_deleted IS NULL)',
-      [id]
-    );
+  async findById(id, includeDeleted = false) {
+    if (!id || typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+      return null;
+    }
+    const sql = includeDeleted
+      ? 'SELECT * FROM products WHERE id = $1'
+      : 'SELECT * FROM products WHERE id = $1 AND (is_deleted = FALSE OR is_deleted IS NULL)';
+    const result = await query(sql, [id]);
     return rowToProduct(result.rows[0]);
   }
 
   async findAll(filters = {}, options = {}) {
-    let sql = 'SELECT * FROM products WHERE (is_deleted = FALSE OR is_deleted IS NULL)';
+    let sql = 'SELECT * FROM products WHERE 1=1';
+    if (!filters.includeDeleted) {
+      sql += ' AND (is_deleted = FALSE OR is_deleted IS NULL)';
+    }
     const params = [];
     let paramCount = 1;
 
@@ -41,15 +56,33 @@ class ProductRepository {
       params.push(filters.isActive);
     }
     if (filters.ids || filters.productIds) {
-      sql += ` AND id = ANY($${paramCount++}::uuid[])`;
-      params.push(filters.ids || filters.productIds);
+      const ids = filters.ids || filters.productIds;
+      const validUuids = Array.isArray(ids) ? ids.filter(id => 
+        typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)
+      ) : [];
+      
+      if (validUuids.length > 0) {
+        sql += ` AND id = ANY($${paramCount++}::uuid[])`;
+        params.push(validUuids);
+      } else if (Array.isArray(ids) && ids.length > 0) {
+        // If they provided IDs but none are valid UUIDs, force empty result
+        sql += ' AND 1=0';
+      }
     }
     if (filters.categoryId) {
       sql += ` AND category_id = $${paramCount++}`;
       params.push(filters.categoryId);
     }
     if (filters.search) {
-      sql += ` AND (name ILIKE $${paramCount} OR sku ILIKE $${paramCount} OR barcode ILIKE $${paramCount})`;
+      sql += ` AND (
+        name ILIKE $${paramCount}
+        OR sku ILIKE $${paramCount}
+        OR barcode ILIKE $${paramCount}
+        OR hs_code ILIKE $${paramCount}
+        OR import_ref_no ILIKE $${paramCount}
+        OR gd_number ILIKE $${paramCount}
+        OR invoice_ref ILIKE $${paramCount}
+      )`;
       params.push(`%${filters.search}%`);
       paramCount++;
     }
@@ -77,16 +110,22 @@ class ProductRepository {
     return result.rows.map(rowToProduct);
   }
 
-  async create(data) {
-    const result = await query(
-      `INSERT INTO products (name, sku, barcode, description, category_id, cost_price, selling_price, wholesale_price,
-       stock_quantity, min_stock_level, unit, pieces_per_box, is_active, created_by, image_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+  async create(data, client = null) {
+    const q = client ? client.query.bind(client) : query;
+    const result = await q(
+      `INSERT INTO products (name, sku, barcode, hs_code, description, category_id, cost_price, selling_price, wholesale_price,
+       stock_quantity, min_stock_level, unit, pieces_per_box, is_active, created_by, image_url, country_of_origin, net_weight_kg, gross_weight_kg, import_ref_no, gd_number, invoice_ref)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
        RETURNING *`,
       [
         data.name,
         data.sku || null,
         data.barcode || null,
+        (() => {
+          const h = data.hsCode ?? data.hs_code;
+          if (h === undefined || h === null || String(h).trim() === '') return null;
+          return String(h).trim();
+        })(),
         data.description || null,
         data.categoryId || data.category_id || null,
         data.costPrice ?? data.cost_price ?? 0,
@@ -98,13 +137,34 @@ class ProductRepository {
         data.piecesPerBox ?? data.pieces_per_box ?? null,
         data.isActive !== false,
         data.createdBy || data.created_by || null,
-        data.imageUrl || data.image_url || null
+        data.imageUrl || data.image_url || null,
+        data.countryOfOrigin ?? data.country_of_origin ?? null,
+        data.netWeightKg ?? data.net_weight_kg ?? null,
+        data.grossWeightKg ?? data.gross_weight_kg ?? null,
+        data.importRefNo ?? data.import_ref_no ?? null,
+        data.gdNumber ?? data.gd_number ?? null,
+        data.invoiceRef ?? data.invoice_ref ?? null
       ]
     );
-    return result.rows[0];
+    const created = rowToProduct(result.rows[0]);
+    if (created && created.stockQuantity !== undefined) {
+      try {
+        await inventoryBalanceRepository.syncBalance(
+          created.id,
+          created.stockQuantity,
+          0,
+          0,
+          client
+        );
+      } catch (err) {
+        console.error('Error syncing inventory_balance in ProductRepository.create:', err);
+      }
+    }
+    return created;
   }
 
-  async update(id, data) {
+  async update(id, data, client = null) {
+
     const fields = [];
     const values = [];
     let n = 1;
@@ -125,25 +185,60 @@ class ProductRepository {
       isActive: 'is_active',
       updatedBy: 'updated_by',
       imageUrl: 'image_url',
-      image_url: 'image_url'
+      image_url: 'image_url',
+      countryOfOrigin: 'country_of_origin',
+      country_of_origin: 'country_of_origin',
+      netWeightKg: 'net_weight_kg',
+      net_weight_kg: 'net_weight_kg',
+      grossWeightKg: 'gross_weight_kg',
+      gross_weight_kg: 'gross_weight_kg',
+      importRefNo: 'import_ref_no',
+      import_ref_no: 'import_ref_no',
+      gdNumber: 'gd_number',
+      gd_number: 'gd_number',
+      invoiceRef: 'invoice_ref',
+      invoice_ref: 'invoice_ref',
+      hsCode: 'hs_code',
+      hs_code: 'hs_code'
     };
     for (const [k, col] of Object.entries(map)) {
       if (data[k] !== undefined) {
+        let v = data[k];
+        if ((col === 'category_id' || col === 'hs_code') && (v === '' || v == null)) {
+          v = null;
+        }
         fields.push(`${col} = $${n++}`);
-        values.push(data[k]);
+        values.push(v);
       }
     }
     if (fields.length === 0) return this.findById(id);
     values.push(id);
-    const result = await query(
+    const q = client ? client.query.bind(client) : query;
+    const result = await q(
       `UPDATE products SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${n} RETURNING *`,
       values
     );
-    return result.rows[0] || null;
+
+    const updated = result.rows[0] || null;
+    if (updated && (data.stockQuantity !== undefined || data.stock_quantity !== undefined)) {
+      try {
+        await inventoryBalanceRepository.syncBalance(
+          updated.id,
+          parseFloat(updated.stock_quantity || 0),
+          0,
+          0,
+          client
+        );
+      } catch (err) {
+        console.error('Error syncing inventory_balance in ProductRepository.update:', err);
+      }
+    }
+    return updated;
   }
 
-  async delete(id) {
-    const result = await query(
+  async delete(id, client = null) {
+    const q = client ? client.query.bind(client) : query;
+    const result = await q(
       'UPDATE products SET is_deleted = TRUE, deleted_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING *',
       [id]
     );
@@ -204,7 +299,15 @@ class ProductRepository {
       countParams.push(filters.categoryId);
     }
     if (filters.search) {
-      countSql += ` AND (name ILIKE $${cn} OR sku ILIKE $${cn} OR barcode ILIKE $${cn})`;
+      countSql += ` AND (
+        name ILIKE $${cn}
+        OR sku ILIKE $${cn}
+        OR barcode ILIKE $${cn}
+        OR hs_code ILIKE $${cn}
+        OR import_ref_no ILIKE $${cn}
+        OR gd_number ILIKE $${cn}
+        OR invoice_ref ILIKE $${cn}
+      )`;
       countParams.push(`%${filters.search}%`);
     }
     if (filters.lowStock) {
@@ -293,6 +396,148 @@ class ProductRepository {
       [categoryId]
     );
     return parseInt(result.rows[0].count, 10);
+  }
+
+  /**
+   * @returns {Map<string, Array>} product id -> rows with investor_name, investor_email, share_percentage, added_at
+   */
+  async findInvestorsByProductIds(productIds) {
+    if (!productIds?.length) return new Map();
+    
+    const validUuids = productIds.filter(id => 
+      typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)
+    );
+    
+    if (validUuids.length === 0) return new Map();
+
+    const result = await query(
+      `SELECT pi.product_id, pi.investor_id, pi.share_percentage, pi.added_at,
+              i.name AS investor_name, i.email AS investor_email
+       FROM product_investors pi
+       INNER JOIN investors i ON i.id = pi.investor_id AND i.deleted_at IS NULL
+       WHERE pi.product_id = ANY($1::uuid[])`,
+      [validUuids]
+    );
+    const map = new Map();
+    for (const row of result.rows) {
+      const pid = String(row.product_id);
+      if (!map.has(pid)) map.set(pid, []);
+      map.get(pid).push(row);
+    }
+    return map;
+  }
+
+  mergeInvestorsIntoProductRow(p, rows) {
+    if (!p) return null;
+    if (!rows?.length) {
+      return { ...p, hasInvestors: false, investors: [] };
+    }
+    return {
+      ...p,
+      hasInvestors: true,
+      investors: rows.map((r) => ({
+        investor: {
+          _id: r.investor_id,
+          id: r.investor_id,
+          name: r.investor_name,
+          email: r.investor_email
+        },
+        sharePercentage: parseFloat(r.share_percentage) || 30,
+        addedAt: r.added_at
+      }))
+    };
+  }
+
+  async findByIdWithInvestors(id) {
+    const p = await this.findById(id);
+    if (!p) return null;
+    const map = await this.findInvestorsByProductIds([p.id]);
+    const rows = map.get(String(p.id)) || [];
+    return this.mergeInvestorsIntoProductRow(p, rows);
+  }
+
+  async replaceProductInvestors(productId, investorLinks) {
+    const { transaction } = require('../../config/postgres');
+    const resolveInvestorId = (raw) => {
+      if (raw == null) return null;
+      if (typeof raw === 'object') return raw._id || raw.id || null;
+      return raw;
+    };
+    return transaction(async (client) => {
+      await client.query('DELETE FROM product_investors WHERE product_id = $1', [productId]);
+      for (const link of investorLinks || []) {
+        const investorId = resolveInvestorId(link.investor);
+        if (!investorId) continue;
+        const share = Math.min(
+          100,
+          Math.max(0, parseFloat(link.sharePercentage ?? link.share_percentage ?? 30))
+        );
+        await client.query(
+          `INSERT INTO product_investors (product_id, investor_id, share_percentage, added_at)
+           VALUES ($1, $2, $3, CURRENT_TIMESTAMP)`,
+          [productId, investorId, share]
+        );
+      }
+    });
+  }
+
+  async deleteProductInvestor(productId, investorId) {
+    await query('DELETE FROM product_investors WHERE product_id = $1 AND investor_id = $2', [
+      productId,
+      investorId
+    ]);
+  }
+
+  async countProductsByInvestor(investorId) {
+    const result = await query('SELECT COUNT(*)::int AS c FROM product_investors WHERE investor_id = $1', [
+      investorId
+    ]);
+    return result.rows[0]?.c || 0;
+  }
+
+  async findProductsByInvestorId(investorId) {
+    const result = await query(
+      `SELECT p.*, pi.share_percentage AS link_share_percentage, pi.added_at AS link_added_at
+       FROM product_investors pi
+       INNER JOIN products p ON p.id = pi.product_id AND (p.is_deleted = FALSE OR p.is_deleted IS NULL)
+       WHERE pi.investor_id = $1
+       ORDER BY p.name ASC`,
+      [investorId]
+    );
+    return result.rows;
+  }
+
+  /**
+   * Permanently removes every product and dependent rows (movements, variants, balances, etc.).
+   * Used by seed scripts / dev reset; not a soft delete.
+   */
+  async deleteAllPermanently() {
+    const { transaction } = require('../../config/postgres');
+    const AccountingService = require('../../services/accountingService');
+    
+    return transaction(async (client) => {
+      // Clear product-related tables
+      await client.query('DELETE FROM product_transformations');
+      await client.query('DELETE FROM inventory_balance');
+      await client.query('DELETE FROM stock_movements');
+      await client.query('DELETE FROM batches');
+      await client.query('DELETE FROM profit_shares');
+      await client.query('DELETE FROM inventory');
+      await client.query('DELETE FROM product_investors');
+      
+      // Clear associated ledger entries for Inventory (1200) to keep Balance Sheet clean
+      await client.query(
+        "DELETE FROM account_ledger WHERE account_code = '1200' OR (reference_type IN ('product_opening_stock', 'inventory_adjustment', 'inventory_reconciliation'))"
+      );
+      
+      const r = await client.query('DELETE FROM products');
+      
+      // Refresh balances so Balance Sheet shows 0
+      await AccountingService.updateAccountBalance(client, '1200');
+      await AccountingService.updateAccountBalance(client, '3100');
+      
+      return r.rowCount;
+    });
   }
 }
 

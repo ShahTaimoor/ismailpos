@@ -1,6 +1,7 @@
 const supplierRepository = require('../repositories/SupplierRepository');
 // ledgerAccountService removed - using PostgreSQL Chart of Accounts directly
 const SupplierBalanceService = require('./supplierBalanceService');
+const AccountingService = require('./accountingService');
 
 class SupplierService {
   /**
@@ -143,8 +144,7 @@ class SupplierService {
     // Transform supplier names to uppercase and attach balances
     result.suppliers = result.suppliers.map(s => {
       const transformed = this.transformSupplierToUppercase(s);
-      const balance = balanceMap.get(s.id) || 0;
-      const netBalance = (s.opening_balance || 0) + balance;
+      const netBalance = balanceMap.get(s.id) || 0;
 
       return {
         ...transformed,
@@ -171,7 +171,7 @@ class SupplierService {
 
     const transformed = this.transformSupplierToUppercase(supplier);
     const summary = await SupplierBalanceService.getBalanceSummary(id);
-    const balance = summary.currentBalance || 0;
+    const balance = summary.balances?.currentBalance ?? 0;
 
     return {
       ...transformed,
@@ -199,8 +199,7 @@ class SupplierService {
 
     return suppliers.map(supplier => {
       const transformed = this.transformSupplierToUppercase(supplier);
-      const balance = balanceMap.get(supplier.id) || 0;
-      const netBalance = (supplier.opening_balance || 0) + balance;
+      const netBalance = balanceMap.get(supplier.id) || 0;
 
       return {
         ...transformed,
@@ -285,8 +284,7 @@ class SupplierService {
 
     return suppliers.map(s => {
       const transformed = this.transformSupplierToUppercase(s);
-      const ledgerBalance = balanceMap.get(s._id.toString()) || 0;
-      const netBalance = (s.openingBalance || 0) + ledgerBalance;
+      const netBalance = balanceMap.get(s._id.toString()) || 0;
 
       return {
         ...transformed,
@@ -295,6 +293,52 @@ class SupplierService {
         advanceBalance: netBalance < 0 ? Math.abs(netBalance) : 0
       };
     });
+  }
+
+  /**
+   * Bulk create suppliers from import data
+   */
+  async bulkCreateSuppliers(suppliersData, userId) {
+    const results = { created: 0, failed: 0, errors: [] };
+    
+    for (const item of suppliersData) {
+      try {
+        const formattedSupplier = {
+          companyName: item.company_name || item.companyName || item['Company Name'],
+          contactPerson: {
+            name: item.contact_person || item.contactPerson || item['Contact Person'] || '',
+            email: item.email || item['Email'] || '',
+            phone: item.phone || item['Phone'] || '',
+            designation: ''
+          },
+          email: item.email || item['Email'],
+          phone: item.phone || item['Phone'],
+          address: item.address || item['Address'] || '',
+          businessType: item.business_type || item.businessType || item['Business Type'] || 'Wholesale',
+          openingBalance: item.opening_balance || item.balance || item['Opening Balance'] || 0,
+          status: 'active'
+        };
+
+        if (!formattedSupplier.companyName) {
+          throw new Error('Company name is required');
+        }
+
+        // Note: Using a minimal check for required data
+        await supplierRepository.create({
+          ...formattedSupplier,
+          createdBy: userId
+        });
+        results.created++;
+      } catch (error) {
+        results.failed++;
+        results.errors.push({ 
+          name: item.company_name || item['Company Name'] || 'Unknown', 
+          error: error.message 
+        });
+      }
+    }
+    
+    return results;
   }
 }
 

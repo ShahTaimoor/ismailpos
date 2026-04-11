@@ -139,11 +139,10 @@ export const componentRegistry = {
     icon: 'BarChart3',
     component: () => import('../pages/PLStatements').then(m => m.default || m.PLStatements)
   },
-  '/balance-sheets': {
-    title: 'Balance Sheets',
+  '/balance-sheet-statement': {
+    title: 'Balance Sheet',
     icon: 'FileText',
-    allowMultiple: true,
-    component: () => import('../pages/BalanceSheets').then(m => m.default || m.BalanceSheets)
+    component: () => import('../pages/BalanceSheetStatement').then(m => m.default || m.BalanceSheetStatement)
   },
   '/discounts': {
     title: 'Discounts',
@@ -196,7 +195,7 @@ export const componentRegistry = {
     component: () => import('../pages/BankReceipts').then(m => m.default || m.BankReceipts)
   },
   '/cities': {
-    title: 'Countries',
+    title: 'Cities',
     icon: 'MapPin',
     component: () => import('../pages/Cities').then(m => m.default || m.Cities)
   },

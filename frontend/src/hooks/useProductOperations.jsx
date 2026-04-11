@@ -62,7 +62,17 @@ export const useProductOperations = (products, refetch) => {
       inventory: {
         currentStock: parseInt(data.inventory.currentStock) || 0,
         reorderPoint: parseInt(data.inventory.reorderPoint) || 10
-      }
+      },
+      countryOfOrigin: data.countryOfOrigin?.trim() || null,
+      netWeightKg: data.netWeightKg === '' || data.netWeightKg === null || data.netWeightKg === undefined
+        ? null
+        : parseFloat(data.netWeightKg),
+      grossWeightKg: data.grossWeightKg === '' || data.grossWeightKg === null || data.grossWeightKg === undefined
+        ? null
+        : parseFloat(data.grossWeightKg),
+      importRefNo: data.importRefNo?.trim() || null,
+      gdNumber: data.gdNumber?.trim() || null,
+      invoiceRef: data.invoiceRef?.trim() || null
     };
     
     if (!selectedProduct) {
@@ -162,11 +172,12 @@ export const useProductOperations = (products, refetch) => {
     const selectedItems = bulkOps.getSelectedItems();
     if (selectedItems.length === 0) return;
 
-    const headers = ['Name', 'Description', 'SKU', 'Stock', 'Cost', 'Retail', 'Wholesale', 'Category', 'Status'];
+    const headers = ['Name', 'Description', 'SKU', 'HS Code', 'Stock', 'Cost', 'Retail', 'Wholesale', 'Category', 'Status'];
     const rows = selectedItems.map(item => [
       item.name || '',
       item.description || '',
       item.sku || '',
+      item.hsCode || '',
       item.inventory?.currentStock || 0,
       item.pricing?.cost || 0,
       item.pricing?.retail || 0,
@@ -188,10 +199,17 @@ export const useProductOperations = (products, refetch) => {
   };
 
   const handleLinkInvestors = async (productId, investors) => {
+    if (!productId) {
+      toast.error('Missing product id. Please close and reopen the dialog.');
+      return { success: false };
+    }
     try {
       await linkInvestors({ productId, investors }).unwrap();
       toast.success('Investors linked successfully!');
       dispatch(api.util.invalidateTags([{ type: 'Products', id: 'LIST' }]));
+      if (typeof refetch === 'function') {
+        await refetch();
+      }
       setIsInvestorsModalOpen(false);
       setSelectedProductForInvestors(null);
       return { success: true };
@@ -199,6 +217,11 @@ export const useProductOperations = (products, refetch) => {
       handleApiError(error, 'Link Investors');
       return { success: false, error };
     }
+  };
+
+  const handleAdd = () => {
+    setSelectedProduct(null);
+    setIsModalOpen(true);
   };
 
   return {
@@ -213,6 +236,7 @@ export const useProductOperations = (products, refetch) => {
     setIsModalOpen,
     setSelectedProductForInvestors,
     setIsInvestorsModalOpen,
+    handleAdd,
     handleEdit,
     handleEditExisting,
     handleCloseModal,

@@ -1,6 +1,13 @@
 const { query, transaction } = require('../config/postgres');
 const { v4: uuidv4 } = require('uuid');
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function isValidUuid(v) {
+  if (!v) return false;
+  return UUID_REGEX.test(String(v).trim());
+}
+
+
 /**
  * Accounting Service - PostgreSQL Implementation
  * Handles all accounting operations with ACID compliance
@@ -136,7 +143,7 @@ class AccountingService {
           metadata.supplierId,
           metadata.currency || 'PKR',
           metadata.status || 'completed',
-          metadata.createdBy
+          isValidUuid(metadata.createdBy) ? metadata.createdBy : null
         ]
       );
 
@@ -322,6 +329,7 @@ class AccountingService {
          AND account_code = '1100'
          AND status = 'completed'
          AND reversed_at IS NULL
+         AND (reference_type IS NULL OR reference_type <> 'customer_opening_balance')
          ${dateFilter}`,
       params
     );
@@ -425,6 +433,289 @@ class AccountingService {
           clientToUse
         );
       }
+    };
+
+    if (client) {
+      await runInTransaction(client);
+    } else {
+      await transaction(async (clientToUse) => {
+        await runInTransaction(clientToUse);
+      });
+    }
+  }
+
+  /**
+   * Post or update bank opening balance in account ledger.
+   * Reverses previous bank opening entries for the bank and posts current amount.
+   *
+   * Double-entry policy:
+   * - Positive opening: Dr Bank (1001), Cr Retained Earnings (3100)
+   * - Negative opening: Dr Retained Earnings (3100), Cr Bank (1001)
+   *
+   * @param {string} bankId - Bank UUID
+   * @param {number} amount - Opening balance amount
+   * @param {Object} options - { createdBy, transactionDate, client }
+   */
+  static async postBankOpeningBalance(bankId, amount, options = {}) {
+    const { createdBy, transactionDate, client } = options;
+    const amt = parseFloat(amount) || 0;
+
+    const runInTransaction = async (clientToUse) => {
+      // Reverse any existing bank opening entries for this bank
+      await this.reverseLedgerEntriesByReference('bank_opening_balance', bankId, clientToUse);
+
+      // If zero after reversal, refresh balances and exit
+      if (Math.abs(amt) < 0.01) {
+        await this.updateAccountBalance(clientToUse, '1001');
+        await this.updateAccountBalance(clientToUse, '3100');
+        return;
+      }
+
+      const absAmt = Math.abs(amt);
+      const refNum = `BANK-OB-${String(bankId).replace(/-/g, '').slice(0, 10)}`;
+      const txnDate = transactionDate || new Date();
+
+      if (amt > 0) {
+        await this.createTransaction(
+          { accountCode: '1001', debitAmount: absAmt, description: 'Bank opening balance' },
+          { accountCode: '3100', creditAmount: absAmt, description: 'Bank opening balance offset (equity)' },
+          {
+            referenceType: 'bank_opening_balance',
+            referenceId: bankId,
+            referenceNumber: refNum,
+            transactionDate: txnDate,
+            currency: 'PKR',
+            createdBy
+          },
+          clientToUse
+        );
+      } else {
+        await this.createTransaction(
+          { accountCode: '3100', debitAmount: absAmt, description: 'Bank opening balance offset (equity)' },
+          { accountCode: '1001', creditAmount: absAmt, description: 'Bank opening balance' },
+          {
+            referenceType: 'bank_opening_balance',
+            referenceId: bankId,
+            referenceNumber: refNum,
+            transactionDate: txnDate,
+            currency: 'PKR',
+            createdBy
+          },
+          clientToUse
+        );
+      }
+    };
+
+    if (client) {
+      await runInTransaction(client);
+    } else {
+      await transaction(async (clientToUse) => {
+        await runInTransaction(clientToUse);
+      });
+    }
+  }
+
+  /**
+   * Post or update customer opening balance in account ledger.
+   * Reverses previous customer opening entries for the customer and posts current amount.
+   *
+   * Double-entry policy:
+   * - Positive opening (customer owes us): Dr AR (1100), Cr Retained Earnings (3100)
+   * - Negative opening (we owe customer/advance): Dr Retained Earnings (3100), Cr AR (1100)
+   *
+   * @param {string} customerId - Customer UUID
+   * @param {number} amount - Opening balance amount
+   * @param {Object} options - { createdBy, transactionDate, client }
+   */
+  static async postCustomerOpeningBalance(customerId, amount, options = {}) {
+    const { createdBy, transactionDate, client } = options;
+    const amt = parseFloat(amount) || 0;
+
+    const runInTransaction = async (clientToUse) => {
+      await this.reverseLedgerEntriesByReference('customer_opening_balance', customerId, clientToUse);
+
+      if (Math.abs(amt) < 0.01) {
+        await this.updateAccountBalance(clientToUse, '1100');
+        await this.updateAccountBalance(clientToUse, '3100');
+        return;
+      }
+
+      const absAmt = Math.abs(amt);
+      const refNum = `CUST-OB-${String(customerId).replace(/-/g, '').slice(0, 10)}`;
+      const txnDate = transactionDate || new Date();
+
+      if (amt > 0) {
+        await this.createTransaction(
+          { accountCode: '1100', debitAmount: absAmt, description: 'Customer opening balance (receivable)' },
+          { accountCode: '3100', creditAmount: absAmt, description: 'Customer opening balance offset (equity)' },
+          {
+            referenceType: 'customer_opening_balance',
+            referenceId: customerId,
+            referenceNumber: refNum,
+            customerId,
+            transactionDate: txnDate,
+            currency: 'PKR',
+            createdBy
+          },
+          clientToUse
+        );
+      } else {
+        await this.createTransaction(
+          { accountCode: '3100', debitAmount: absAmt, description: 'Customer opening balance offset (equity)' },
+          { accountCode: '1100', creditAmount: absAmt, description: 'Customer opening balance (advance)' },
+          {
+            referenceType: 'customer_opening_balance',
+            referenceId: customerId,
+            referenceNumber: refNum,
+            customerId,
+            transactionDate: txnDate,
+            currency: 'PKR',
+            createdBy
+          },
+          clientToUse
+        );
+      }
+    };
+
+    if (client) {
+      await runInTransaction(client);
+    } else {
+      await transaction(async (clientToUse) => {
+        await runInTransaction(clientToUse);
+      });
+    }
+  }
+
+  /**
+   * Post product opening stock to the ledger (new product registration with initial quantity).
+   * Dr Inventory (1200), Cr Retained Earnings (3100) — same equity offset pattern as customer/bank opening balances.
+   *
+   * @param {string} productId - Product UUID
+   * @param {number} quantity - Opening stock quantity (units)
+   * @param {number} unitCost - Cost per unit (from product pricing.cost)
+   * @param {Object} options - { createdBy, transactionDate, client }
+   */
+  static async postProductOpeningStock(productId, quantity, unitCost, options = {}) {
+    const { createdBy, transactionDate, client } = options;
+    const qty = Math.max(0, parseFloat(quantity) || 0);
+    const cost = Math.max(0, parseFloat(unitCost) || 0);
+    const amount = Math.round(qty * cost * 100) / 100;
+    const refId = String(productId);
+
+    const runInTransaction = async (clientToUse) => {
+      await this.reverseLedgerEntriesByReference('product_opening_stock', refId, clientToUse);
+
+      if (amount < 0.01) {
+        await this.updateAccountBalance(clientToUse, '1200');
+        await this.updateAccountBalance(clientToUse, '3100');
+        return;
+      }
+
+      const refNum = `PROD-OB-${refId.replace(/-/g, '').slice(0, 10)}`;
+      const txnDate = transactionDate || new Date();
+
+      await this.createTransaction(
+        { accountCode: '1200', debitAmount: amount, description: 'Product opening stock (inventory)' },
+        { accountCode: '3100', creditAmount: amount, description: 'Product opening stock (equity offset)' },
+        {
+          referenceType: 'product_opening_stock',
+          referenceId: refId,
+          referenceNumber: refNum,
+          transactionDate: txnDate,
+          currency: 'PKR',
+          createdBy: isValidUuid(createdBy) ? createdBy : null
+        },
+        clientToUse
+      );
+    };
+
+    if (client) {
+      await runInTransaction(client);
+    } else {
+      await transaction(async (clientToUse) => {
+        await runInTransaction(clientToUse);
+      });
+    }
+  }
+
+  /**
+   * Post manual stock adjustment to the ledger.
+   * If qty delta > 0: Dr Inventory (1200), Cr Retained Earnings (3100)
+   * If qty delta < 0: Dr Retained Earnings (3100), Cr Inventory (1200)
+   *
+   * @param {string} productId - Product UUID
+   * @param {number} deltaQty - Change in quantity (positive for increase, negative for decrease)
+   * @param {number} unitCost - Cost per unit
+   * @param {Object} options - { createdBy, transactionDate, reason, client }
+   */
+  static async recordStockAdjustment(productId, deltaQty, unitCost, options = {}) {
+    const { createdBy, transactionDate, reason, client } = options;
+    const delta = parseFloat(deltaQty) || 0;
+    if (Math.abs(delta) < 0.0001) return;
+
+    const cost = Math.max(0, parseFloat(unitCost) || 0);
+    const amount = Math.abs(Math.round(delta * cost * 100) / 100);
+    const refId = String(productId);
+    const txnDate = transactionDate || new Date();
+    const desc = reason || (delta > 0 ? 'Manual Stock Increase' : 'Manual Stock Decrease');
+
+    const runInTransaction = async (clientToUse) => {
+      if (delta > 0) {
+        // Increase: Debit Inventory, Credit Retained Earnings
+        await this.createTransaction(
+          { accountCode: '1200', debitAmount: amount, description: `${desc} (${delta} units)` },
+          { accountCode: '3100', creditAmount: amount, description: 'Inventory Adjustment Offset' },
+          {
+            referenceType: 'inventory_adjustment',
+            referenceId: refId,
+            referenceNumber: `ADJ-${Date.now()}`,
+            transactionDate: txnDate,
+            currency: 'PKR',
+            createdBy
+          },
+          clientToUse
+        );
+      } else {
+        // Decrease: Debit Retained Earnings, Credit Inventory
+        await this.createTransaction(
+          { accountCode: '3100', debitAmount: amount, description: 'Inventory Adjustment Offset' },
+          { accountCode: '1200', creditAmount: amount, description: `${desc} (${Math.abs(delta)} units)` },
+          {
+            referenceType: 'inventory_adjustment',
+            referenceId: refId,
+            referenceNumber: `ADJ-${Date.now()}`,
+            transactionDate: txnDate,
+            currency: 'PKR',
+            createdBy
+          },
+          clientToUse
+        );
+      }
+    };
+
+    if (client) {
+      await runInTransaction(client);
+    } else {
+      await transaction(async (clientToUse) => {
+        await runInTransaction(clientToUse);
+      });
+    }
+  }
+
+
+  /**
+   * Reverse product opening stock ledger entries (e.g. when product is deleted).
+   * @param {string} productId - Product UUID
+   * @param {Object} options - { client }
+   */
+  static async removeProductOpeningStockLedger(productId, options = {}) {
+    const { client } = options;
+    const refId = String(productId);
+
+    const runInTransaction = async (clientToUse) => {
+      await this.reverseLedgerEntriesByReference('product_opening_stock', refId, clientToUse);
+      await this.updateAccountBalance(clientToUse, '1200');
+      await this.updateAccountBalance(clientToUse, '3100');
     };
 
     if (client) {
@@ -869,6 +1160,91 @@ class AccountingService {
       currency: 'PKR',
       createdBy: cashPayment.created_by || cashPayment.createdBy
     }, client);
+  }
+
+  /**
+   * Investor payout: reduce equity or liability (debit), reduce cash or bank (credit).
+   * Default debit is Retained Earnings (3100); optional 2350 Due to Investors if you accrue payables on the ledger.
+   * @param {object} ctx
+   * @param {string} ctx.investorPayoutId - UUID of investor_payouts row (ledger reference_id)
+   * @param {string} ctx.investorId
+   * @param {string} ctx.investorName
+   * @param {number} ctx.amount
+   * @param {'cash'|'bank'} ctx.paymentMethod
+   * @param {string} ctx.debitAccountCode - equity or liability account
+   * @param {Date} [ctx.transactionDate]
+   * @param {string} [ctx.createdBy]
+   * @param {object} client - pg client when part of outer transaction
+   */
+  static async recordInvestorPayout(ctx, client = null) {
+    const {
+      investorPayoutId,
+      investorId,
+      investorName,
+      amount,
+      paymentMethod,
+      debitAccountCode,
+      transactionDate,
+      createdBy
+    } = ctx;
+
+    if (!investorPayoutId) {
+      throw new Error('investorPayoutId is required for investor payout ledger posting');
+    }
+
+    const amt = parseFloat(amount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      throw new Error('Invalid amount for investor payout ledger posting');
+    }
+
+    const method = paymentMethod === 'bank' ? 'bank' : 'cash';
+    const creditAccount = method === 'bank' ? '1001' : '1000';
+    const debit = String(debitAccountCode || '3100').toUpperCase();
+
+    const qf = client ? client.query.bind(client) : query;
+    const typeRes = await qf(
+      `SELECT account_type FROM chart_of_accounts
+       WHERE UPPER(account_code) = UPPER($1) AND deleted_at IS NULL AND is_active = TRUE`,
+      [debit]
+    );
+    if (!typeRes.rows[0]) {
+      throw new Error(`Debit account ${debit} not found or inactive`);
+    }
+    const accType = typeRes.rows[0].account_type;
+    if (accType !== 'equity' && accType !== 'liability') {
+      throw new Error(
+        `Investor payout debit account must be equity or liability (e.g. 3100 Retained Earnings or 2350 Due to Investors), not ${accType}`
+      );
+    }
+
+    const label = investorName || investorId || 'Investor';
+    const entry1 = {
+      accountCode: debit,
+      debitAmount: amt,
+      creditAmount: 0,
+      description: `Investor payout — ${label}`
+    };
+    const entry2 = {
+      accountCode: creditAccount,
+      debitAmount: 0,
+      creditAmount: amt,
+      description: `Investor payout (${method}) — ${label}`
+    };
+
+    return await this.createTransaction(
+      entry1,
+      entry2,
+      {
+        referenceType: 'investor_payout',
+        referenceId: investorPayoutId,
+        referenceNumber: `INV-PAY-${String(investorPayoutId).replace(/-/g, '').slice(0, 12)}`,
+        transactionDate: transactionDate || new Date(),
+        currency: 'PKR',
+        createdBy,
+        status: 'completed'
+      },
+      client
+    );
   }
 
   /**
@@ -1331,6 +1707,7 @@ class AccountingService {
          AND ledger.account_code = '1100'
          AND ledger.status = 'completed'
          AND ledger.reversed_at IS NULL
+         AND (ledger.reference_type IS NULL OR ledger.reference_type <> 'customer_opening_balance')
          ${dateFilter}
        WHERE c.id = ANY($1)
          AND c.is_deleted = FALSE

@@ -6,7 +6,7 @@ import {
   Plus,
   Search,
   Filter,
-  Download,
+
   Eye,
   RotateCcw,
   Calendar,
@@ -291,8 +291,9 @@ export const StockMovements = () => {
     const val = parseFloat(amount);
     if (isNaN(val)) return '—';
     return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD'
+      style: 'decimal',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     }).format(val);
   };
 
@@ -331,10 +332,7 @@ export const StockMovements = () => {
             <Plus className="h-4 w-4" />
             Stock Adjustment
           </Button>
-          <Button variant="secondary" size="default" className="flex items-center justify-center gap-2">
-            <Download className="h-4 w-4" />
-            Export
-          </Button>
+
         </div>
       </div>
 
@@ -455,6 +453,7 @@ export const StockMovements = () => {
             </div>
 
             <div className="col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Date Range</label>
               <DateFilter
                 startDate={filters.dateFrom}
                 endDate={filters.dateTo}

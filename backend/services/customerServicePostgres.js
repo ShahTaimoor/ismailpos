@@ -7,8 +7,16 @@ function normalizeCustomer(c) {
   if (!c) return c;
   return {
     ...c,
+    id: c.id,
+    businessName: c.business_name || c.businessName || '',
+    name: c.name || '',
+    email: c.email || '',
+    phone: c.phone || '',
+    openingBalance: c.opening_balance ?? c.openingBalance ?? 0,
     businessType: c.business_type ?? c.businessType ?? 'wholesale',
-    customerTier: c.customer_tier ?? c.customerTier ?? 'bronze'
+    customerTier: c.customer_tier ?? c.customerTier ?? 'bronze',
+    // Handle city extraction from address if needed
+    city: c.city || (typeof c.address === 'object' ? c.address?.city : '') || ''
   };
 }
 
@@ -104,12 +112,12 @@ class CustomerService {
     const data = { ...customerData, createdBy: userId };
     if (options.openingBalance != null) data.openingBalance = options.openingBalance;
     const customer = await customerRepository.create(data);
-    
+
     // Auto-create Chart of Accounts entry for this customer
     try {
       const accountCode = `CUST-${customer.id}`;
       const accountName = customer.business_name || customer.name || 'Unknown Customer';
-      
+
       // Check if account already exists
       const existingAccount = await chartOfAccountsRepository.findByAccountCode(accountCode);
       if (!existingAccount) {
@@ -133,7 +141,19 @@ class CustomerService {
       console.error('Failed to create Chart of Accounts entry for customer:', chartError);
       // Don't fail the customer creation if chart account creation fails
     }
-    
+
+    // Post opening balance to ledger (Dr AR / Cr Equity, or reverse for advances)
+    try {
+      const openingBalance = parseFloat(customer.opening_balance ?? customer.openingBalance ?? options.openingBalance ?? 0) || 0;
+      await AccountingService.postCustomerOpeningBalance(customer.id, openingBalance, {
+        createdBy: userId,
+        transactionDate: customer.created_at || new Date()
+      });
+    } catch (openingBalanceError) {
+      console.error('Failed to post customer opening balance to ledger:', openingBalanceError);
+      // Don't fail customer creation if ledger posting fails
+    }
+
     const withBalance = await this.getCustomerById(customer.id);
     return { customer: withBalance, message: 'Customer created successfully' };
   }
@@ -143,6 +163,19 @@ class CustomerService {
     if (options.openingBalance != null) data.openingBalance = options.openingBalance;
     const customer = await customerRepository.update(id, data);
     if (!customer) throw new Error('Customer not found');
+
+    if (options.openingBalance != null || Object.prototype.hasOwnProperty.call(customerData, 'openingBalance')) {
+      try {
+        const openingBalance = parseFloat(customer.opening_balance ?? customer.openingBalance ?? options.openingBalance ?? 0) || 0;
+        await AccountingService.postCustomerOpeningBalance(id, openingBalance, {
+          createdBy: userId,
+          transactionDate: customer.updated_at || new Date()
+        });
+      } catch (openingBalanceError) {
+        console.error('Failed to update customer opening balance in ledger:', openingBalanceError);
+      }
+    }
+
     const updated = await this.getCustomerById(id);
     return { customer: updated, message: 'Customer updated successfully' };
   }
@@ -211,7 +244,7 @@ class CustomerService {
             addr = null;
           }
         }
-        
+
         // Handle both array and object formats for address
         let customerCity = null;
         if (Array.isArray(addr) && addr.length > 0) {
@@ -283,7 +316,7 @@ class CustomerService {
 
   async searchCustomers(searchTerm, limit = 10) {
     const customers = await customerRepository.search(searchTerm, { limit });
-    
+
     const customerIds = customers.map(c => c.id);
     const balanceMap = await AccountingService.getBulkCustomerBalances(customerIds);
 
@@ -298,6 +331,43 @@ class CustomerService {
         advanceBalance: balance < 0 ? Math.abs(balance) : 0
       });
     });
+  }
+
+  /**
+   * Bulk create customers from imported data
+   */
+  async bulkCreateCustomers(customersData, userId) {
+    let created = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (const customer of customersData) {
+      try {
+        // Map user-friendly Excel headers to DB fields
+        const mappedData = {
+          businessName: customer.business_name || customer.businessName || customer.business_name || '',
+          name: customer.name || customer.contact_person || '',
+          email: customer.email || '',
+          phone: customer.phone || '',
+          openingBalance: parseFloat(customer.opening_balance || customer.openingBalance || customer.balance || 0),
+          businessType: (customer.business_type || customer.businessType || 'wholesale').toLowerCase(),
+          customerTier: (customer.customer_tier || customer.customerTier || 'bronze').toLowerCase(),
+          isActive: true
+        };
+
+        if (!mappedData.businessName && !mappedData.name) {
+          throw new Error('Customer business name or name is required');
+        }
+
+        await this.createCustomer(mappedData, userId, { openingBalance: mappedData.openingBalance });
+        created++;
+      } catch (err) {
+        failed++;
+        errors.push({ customer: customer.businessName || 'Row', error: err.message });
+      }
+    }
+
+    return { created, failed, errors };
   }
 }
 

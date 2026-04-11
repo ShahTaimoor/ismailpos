@@ -19,19 +19,21 @@ import {
   ArrowRight,
   Save,
   RotateCcw,
-  Download,
   RefreshCw,
   Phone,
   Receipt,
   Printer,
-  ArrowUpDown
+  ArrowUpDown,
+  Camera
 } from 'lucide-react';
+import BaseModal from '../components/BaseModal';
 import { useGetSuppliersQuery, useGetSupplierQuery } from '../store/services/suppliersApi';
 import { useGetProductsQuery } from '../store/services/productsApi';
 import { useGetVariantsQuery } from '../store/services/productVariantsApi';
 import {
   useGetPurchaseOrdersQuery,
   useGetPurchaseOrderQuery,
+  useLazyGetPurchaseOrderQuery,
   useCreatePurchaseOrderMutation,
   useUpdatePurchaseOrderMutation,
   useUpdatePurchaseOrderItemsConfirmationMutation,
@@ -55,6 +57,14 @@ import { LoadingSpinner, LoadingButton, LoadingCard, LoadingGrid, LoadingPage, L
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  OrderCheckoutCard,
+  OrderDetailsSection,
+  OrderSummaryBar,
+  OrderSummaryContent,
+  OrderCheckoutActions,
+} from '../components/order/OrderCheckoutLayout';
+import { ShowDetailsSectionHeader } from '../components/ShowDetailsSectionHeader';
 import { useTab } from '../contexts/TabContext';
 import { getComponentInfo } from '../utils/componentUtils';
 import { formatDate, formatCurrency } from '../utils/formatters';
@@ -62,6 +72,8 @@ import { useCompanyInfo } from '../hooks/useCompanyInfo';
 import DateFilter from '../components/DateFilter';
 import { getCurrentDatePakistan, getDateDaysAgo } from '../utils/dateUtils';
 import PrintModal from '../components/PrintModal';
+import BarcodeLabelPrinter from '../components/BarcodeLabelPrinter';
+import { buildReceiptLabelProductsFromLineItems } from '../utils/receiptLabelUtils';
 
 // Helper to get product display name (handles object with name/displayName or UUID string)
 const getProductDisplayName = (product) => {
@@ -311,6 +323,27 @@ export const PurchaseOrders = ({ tabId }) => {
   const [showViewModal, setShowViewModal] = useState(false);
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [printOrderData, setPrintOrderData] = useState(null);
+
+  const PO_LABEL_PRINT_KEY = 'purchaseOrderOfferBarcodeLabelsAfterConfirm';
+  const [printBarcodeLabelsAfterPoConfirm, setPrintBarcodeLabelsAfterPoConfirm] = useState(() => {
+    try {
+      const v = localStorage.getItem(PO_LABEL_PRINT_KEY);
+      if (v === null) return false;
+      return v === 'true';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(PO_LABEL_PRINT_KEY, String(printBarcodeLabelsAfterPoConfirm));
+    } catch {
+      /* ignore */
+    }
+  }, [printBarcodeLabelsAfterPoConfirm]);
+
+  const [showReceiptLabelPrinter, setShowReceiptLabelPrinter] = useState(false);
+  const [receiptLabelProducts, setReceiptLabelProducts] = useState([]);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [viewOrderFresh, setViewOrderFresh] = useState(null);
   const [selectedItemIndices, setSelectedItemIndices] = useState([]);
@@ -349,6 +382,18 @@ export const PurchaseOrders = ({ tabId }) => {
 
   // Current order for operations
   const [currentOrder, setCurrentOrder] = useState(null);
+  const [showPurchaseOrderDetailsFields, setShowPurchaseOrderDetailsFields] = useState(false);
+  const [showProductImages, setShowProductImages] = useState(localStorage.getItem('showProductImagesUI') !== 'false');
+
+  useEffect(() => {
+    const handleConfigChange = () => {
+      setShowProductImages(localStorage.getItem('showProductImagesUI') !== 'false');
+    };
+    window.addEventListener('productImagesConfigChanged', handleConfigChange);
+    return () => window.removeEventListener('productImagesConfigChanged', handleConfigChange);
+  }, []);
+
+  const [previewImageProduct, setPreviewImageProduct] = useState(null);
 
   // Auto-focus on product search field when component mounts
   useEffect(() => {
@@ -585,6 +630,7 @@ export const PurchaseOrders = ({ tabId }) => {
   const [updatePurchaseOrderMutation, { isLoading: updating }] = useUpdatePurchaseOrderMutation();
   const [deletePurchaseOrderMutation, { isLoading: deleting }] = useDeletePurchaseOrderMutation();
   const [confirmPurchaseOrderMutation, { isLoading: confirming }] = useConfirmPurchaseOrderMutation();
+  const [triggerGetPurchaseOrder] = useLazyGetPurchaseOrderQuery();
   const [updateItemsConfirmationMutation, { isLoading: updatingItemsConfirmation }] = useUpdatePurchaseOrderItemsConfirmationMutation();
   const [cancelPurchaseOrderMutation, { isLoading: cancelling }] = useCancelPurchaseOrderMutation();
   const [closePurchaseOrderMutation, { isLoading: closing }] = useClosePurchaseOrderMutation();
@@ -625,7 +671,7 @@ export const PurchaseOrders = ({ tabId }) => {
           <div className="text-xs text-gray-500">{supplier.name}</div>
         )}
         <div className="text-sm text-gray-600">
-          Outstanding Balance: {(supplier.pendingBalance || 0).toFixed(2)}
+          Outstanding Balance: {(Number(supplier.pendingBalance ?? supplier.outstandingBalance ?? 0) || 0).toFixed(2)}
         </div>
       </div>
     );
@@ -833,7 +879,8 @@ export const PurchaseOrders = ({ tabId }) => {
     const subtotal = formData.items.reduce((sum, item) => sum + item.totalCost, 0);
     const tax = formData.isTaxExempt ? 0 : subtotal * 0.08; // 8% tax if not exempt
     const total = subtotal + tax;
-    const supplierOutstanding = selectedSupplier?.pendingBalance || 0;
+    const supplierOutstanding =
+      Number(selectedSupplier?.pendingBalance ?? selectedSupplier?.outstandingBalance ?? 0) || 0;
     const totalPayables = total + supplierOutstanding;
 
     return { subtotal, tax, total, supplierOutstanding, totalPayables };
@@ -988,17 +1035,37 @@ export const PurchaseOrders = ({ tabId }) => {
     }
   };
 
-  const handleConfirm = (id) => {
-    if (window.confirm('Are you sure you want to confirm this pending purchase order? This will change its status to confirmed and make it ready for receiving.')) {
-      confirmPurchaseOrderMutation(id)
-        .unwrap()
-        .then(() => {
-          toast.success('Purchase order confirmed successfully');
-          refetch();
-        })
-        .catch((error) => {
-          toast.error(error?.data?.message || 'Failed to confirm purchase order');
-        });
+  const handleConfirm = async (order) => {
+    const id = order?.id || order?._id;
+    if (!id) return;
+    if (
+      !window.confirm(
+        'Are you sure you want to confirm this purchase order? Inventory will be updated and a purchase invoice may be created.'
+      )
+    ) {
+      return;
+    }
+    try {
+      await confirmPurchaseOrderMutation(id).unwrap();
+      toast.success('Purchase order confirmed successfully');
+      refetch();
+
+      if (!printBarcodeLabelsAfterPoConfirm) return;
+
+      try {
+        const res = await triggerGetPurchaseOrder(id).unwrap();
+        const po = res?.data?.purchaseOrder || res?.purchaseOrder;
+        const items = po?.items || [];
+        const prods = buildReceiptLabelProductsFromLineItems(items);
+        if (prods.length) {
+          setReceiptLabelProducts(prods);
+          setShowReceiptLabelPrinter(true);
+        }
+      } catch (labelErr) {
+        console.warn('Could not load PO for barcode labels:', labelErr);
+      }
+    } catch (error) {
+      toast.error(error?.data?.message || error?.message || 'Failed to confirm purchase order');
     }
   };
 
@@ -1122,13 +1189,21 @@ export const PurchaseOrders = ({ tabId }) => {
       const qty = Number(item.quantity) || 0;
       const unitCost = Number(item.costPerUnit ?? item.unitCost ?? item.cost ?? 0) || 0;
       const totalCost = Number(item.totalCost) || qty * unitCost;
+      const barcode =
+        typeof product === 'object' && product !== null
+          ? (product.barcode || product.barcodeNumber || '').toString().trim()
+          : '';
+      const sku =
+        typeof product === 'object' && product !== null
+          ? (product.sku || product.skuCode || '').toString().trim()
+          : '';
       return {
         quantity: qty,
         unitPrice: unitCost,
         unitCost,
         costPerUnit: unitCost,
         total: totalCost,
-        product: { name },
+        product: { name, ...(barcode ? { barcode } : {}), ...(sku ? { sku } : {}) },
         name
       };
     });
@@ -1159,83 +1234,7 @@ export const PurchaseOrders = ({ tabId }) => {
     }
   };
 
-  const handleExport = () => {
-    try {
-      // Get all purchase orders (or filtered ones)
-      const ordersToExport = purchaseOrders || [];
 
-      if (ordersToExport.length === 0) {
-        toast.error('No purchase orders to export');
-        return;
-      }
-
-      // Prepare CSV headers
-      const headers = [
-        'Order Number',
-        'Date',
-        'Supplier',
-        'Status',
-        'Subtotal',
-        'Tax',
-        'Total',
-        'Items Count',
-        'Notes'
-      ];
-
-      // Convert orders to CSV rows
-      const csvRows = [
-        headers.join(',')
-      ];
-
-      ordersToExport.forEach(order => {
-        const supplierName = order.supplier?.companyName ||
-          order.supplier?.name ||
-          order.supplierInfo?.companyName ||
-          'N/A';
-        const status = order.status || 'N/A';
-        const subtotal = order.subtotal || order.pricing?.subtotal || 0;
-        const tax = order.tax || order.pricing?.taxAmount || 0;
-        const total = order.total || order.pricing?.total || 0;
-        const itemsCount = order.items?.length || 0;
-        const notes = (order.notes || '').replace(/"/g, '""'); // Escape quotes
-        const date = order.createdAt ? formatDate(order.createdAt) : formatDate(new Date());
-
-        const row = [
-          order.poNumber || order.orderNumber || 'N/A',
-          date,
-          `"${supplierName}"`,
-          status,
-          subtotal.toFixed(2),
-          tax.toFixed(2),
-          total.toFixed(2),
-          itemsCount,
-          `"${notes}"`
-        ];
-
-        csvRows.push(row.join(','));
-      });
-
-      // Create CSV content
-      const csvContent = csvRows.join('\n');
-
-      // Create blob and download
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const link = document.createElement('a');
-      const url = URL.createObjectURL(blob);
-      const timestamp = new Date().toISOString().split('T')[0];
-      link.setAttribute('href', url);
-      link.setAttribute('download', `purchase_orders_${timestamp}.csv`);
-      link.style.visibility = 'hidden';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-
-      toast.success(`Exported ${ordersToExport.length} purchase order(s) to CSV`);
-    } catch (error) {
-      toast.error('Failed to export purchase orders');
-    }
-  };
 
   // Extract purchase orders data - handle multiple possible response structures
   const purchaseOrders = React.useMemo(() => {
@@ -1259,15 +1258,7 @@ export const PurchaseOrders = ({ tabId }) => {
           <p className="text-sm sm:text-base text-gray-600">Process purchase order transactions</p>
         </div>
         <div className="flex items-center space-x-2 w-full sm:w-auto">
-          <Button
-            onClick={handleExport}
-            variant="secondary"
-            size="default"
-            className="flex-1 sm:flex-initial"
-          >
-            <Download className="h-4 w-4 sm:mr-2" />
-            <span className="hidden sm:inline">Export</span>
-          </Button>
+
           <Button
             onClick={resetForm}
             variant="default"
@@ -1336,8 +1327,8 @@ export const PurchaseOrders = ({ tabId }) => {
                   <div className="flex items-center space-x-4 mt-2">
                     <div className="flex items-center space-x-1">
                       <span className="text-xs text-gray-500">Outstanding Balance:</span>
-                      <span className={`text-sm font-medium ${(selectedSupplier.pendingBalance || selectedSupplier.outstandingBalance || 0) > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                        {(selectedSupplier.pendingBalance || selectedSupplier.outstandingBalance || 0).toFixed(2)}
+                      <span className={`text-sm font-medium ${(Number(selectedSupplier.pendingBalance ?? selectedSupplier.outstandingBalance ?? 0) || 0) > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        {(Number(selectedSupplier.pendingBalance ?? selectedSupplier.outstandingBalance ?? 0) || 0).toFixed(2)}
                       </span>
                     </div>
                     {selectedSupplier.phone && (
@@ -1605,10 +1596,10 @@ export const PurchaseOrders = ({ tabId }) => {
                 </Button>
               </div>
 
-              {/* Desktop Table Header — 1+4+1+3+1+1+1 = 12 (wide Qty for box + pcs + total) */}
+              {/* Desktop Table Header — 1+4+1+3+1+1+1 = 12 */}
               <div className="hidden md:grid grid-cols-12 gap-4 items-center pb-2 border-b border-gray-300 mb-2">
-                <div className="col-span-1">
-                  <span className="text-xs font-semibold text-gray-600 uppercase">#</span>
+                <div className="col-span-1 flex justify-center">
+                  <span className="text-xs font-semibold text-gray-600 uppercase w-1/2 min-w-[56px] text-center">S.NO</span>
                 </div>
                 <div className="col-span-4">
                   <span className="text-xs font-semibold text-gray-600 uppercase">Product</span>
@@ -1625,8 +1616,8 @@ export const PurchaseOrders = ({ tabId }) => {
                 <div className="col-span-1">
                   <span className="text-xs font-semibold text-gray-600 uppercase">Total</span>
                 </div>
-                <div className="col-span-1">
-                  <span className="text-xs font-semibold text-gray-600 uppercase">Action</span>
+                <div className="col-span-1 flex justify-center">
+                  <span className="text-xs font-semibold text-gray-600 uppercase w-1/2 min-w-[56px] text-center">Action</span>
                 </div>
               </div>
 
@@ -1643,11 +1634,24 @@ export const PurchaseOrders = ({ tabId }) => {
                     {/* Mobile Card View */}
                     <div className="md:hidden mb-4 p-3 border border-gray-200 rounded-lg bg-white shadow-sm">
                       <div className="flex items-start justify-between mb-3">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-xs font-semibold text-gray-500 bg-gray-100 px-2 py-0.5 rounded">#{index + 1}</span>
-                            <span className="font-medium text-sm truncate">
-                              {product?.isVariant
+                        <div className="flex-1 min-w-0 flex items-center gap-2">
+                          {product?.imageUrl && showProductImages && (
+                            <div 
+                              className="h-10 w-10 flex-shrink-0 bg-gray-100 rounded overflow-hidden border border-gray-200 cursor-pointer hover:border-primary-500 transition-colors group relative"
+                              onClick={() => setPreviewImageProduct(product)}
+                              title="Click to view full size"
+                            >
+                              <img src={product.imageUrl} alt="" className="h-full w-full object-cover" />
+                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 flex items-center justify-center transition-colors">
+                                <Camera className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                              </div>
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-xs font-semibold text-gray-500 bg-gray-100 px-2 py-0.5 rounded">#{index + 1}</span>
+                              <span className="font-medium text-sm truncate">
+                                {product?.isVariant
                                 ? safeRender(product?.displayName || product?.variantName || product?.name || 'Unknown Variant')
                                 : safeRender(product?.name || 'Unknown Product')}
                             </span>
@@ -1657,9 +1661,17 @@ export const PurchaseOrders = ({ tabId }) => {
                               {product.variantType}: {product.variantValue}
                             </span>
                           )}
+                          {(() => {
+                            const b = (product?.barcode ?? '').toString().trim();
+                            if (b) return <span className="text-xs text-gray-600 font-mono block mt-0.5">Barcode: {b}</span>;
+                            const s = (product?.sku ?? '').toString().trim();
+                            if (s) return <span className="text-xs text-gray-600 font-mono block mt-0.5">SKU: {s}</span>;
+                            return null;
+                          })()}
                           <div className="flex flex-wrap items-center gap-2 mt-1">
                             {isLowStock && <span className="text-yellow-600 text-xs">⚠️ Low</span>}
                           </div>
+                        </div>
                         </div>
                         <Button
                           onClick={() => handleRemoveItem(index)}
@@ -1765,15 +1777,27 @@ export const PurchaseOrders = ({ tabId }) => {
                     <div className={`hidden md:block py-1 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                       <div className="grid grid-cols-12 gap-4 items-center">
                         {/* Serial Number - 1 column (new field) */}
-                        <div className="col-span-1">
-                          <span className="text-sm font-medium text-gray-700 bg-gray-50 px-0.5 py-1 rounded border border-gray-200 block text-center h-8 flex items-center justify-center">
+                        <div className="col-span-1 flex justify-center">
+                          <span className="text-sm font-medium text-gray-700 bg-gray-50 px-0.5 py-1 rounded border border-gray-200 block text-center h-8 w-1/2 min-w-[56px] flex items-center justify-center">
                             {index + 1}
                           </span>
                         </div>
 
                         {/* Product Name — col-span-4 so Qty can use 3 cols for dual units */}
-                        <div className="col-span-4 flex items-center min-h-8 min-w-0">
-                          <div className="flex flex-col">
+                        <div className="col-span-4 flex items-center gap-2 min-h-8 min-w-0">
+                          {product?.imageUrl && showProductImages && (
+                            <div 
+                              className="h-8 w-8 flex-shrink-0 bg-gray-100 rounded overflow-hidden border border-gray-200 cursor-pointer hover:border-primary-500 transition-colors group relative"
+                              onClick={() => setPreviewImageProduct(product)}
+                              title="Click to view full size"
+                            >
+                              <img src={product.imageUrl} alt="" className="h-full w-full object-cover" />
+                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 flex items-center justify-center transition-colors">
+                                <Camera className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                              </div>
+                            </div>
+                          )}
+                          <div className="flex flex-col min-w-0">
                             <span className="font-medium text-sm truncate">
                               {product?.isVariant
                                 ? safeRender(product?.displayName || product?.variantName || product?.name || 'Unknown Variant')
@@ -1857,12 +1881,12 @@ export const PurchaseOrders = ({ tabId }) => {
                         </div>
 
                         {/* Delete Button - 1 column (matches Product Selection Add Button) */}
-                        <div className="col-span-1">
+                        <div className="col-span-1 flex justify-center">
                           <Button
                             onClick={() => handleRemoveItem(index)}
                             variant="destructive"
                             size="sm"
-                            className="h-8 w-full"
+                            className="h-8 w-1/2 min-w-[56px]"
                             title="Delete"
                           >
                             <Trash2 className="h-4 w-4" />
@@ -1881,195 +1905,194 @@ export const PurchaseOrders = ({ tabId }) => {
 
       {/* Purchase Order Details - Create Mode */}
       {formData.items.length > 0 && !showEditModal && (
-        <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-lg max-w-5xl ml-auto mt-4">
-          {/* Purchase Details Section */}
-          <div className="px-4 sm:px-6 py-4 border-b border-blue-200">
-            <h3 className="text-base sm:text-lg font-medium text-gray-900 text-left sm:text-right">
-              Purchase Order Details
-            </h3>
-          </div>
-          <div className="px-4 sm:px-6 py-4">
-            {/* Mobile Layout - Stacked */}
-            <div className="md:hidden space-y-3">
-              {/* Invoice Number */}
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Invoice Number
-                </label>
-                <Input
-                  type="text"
-                  value={formData.invoiceNumber || "Auto-generated"}
-                  onChange={(e) => setFormData(prev => ({ ...prev, invoiceNumber: e.target.value }))}
-                  className="h-10 text-sm w-full"
-                  placeholder="Auto-generated"
-                  disabled
-                />
-              </div>
-
-              {/* Expected Delivery */}
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Expected Delivery
-                </label>
-                <div className="relative">
-                  <Input
-                    type="date"
-                    value={formData.expectedDelivery}
-                    onChange={(e) => setFormData(prev => ({ ...prev, expectedDelivery: e.target.value }))}
-                    className="h-10 text-sm w-full pr-8"
-                  />
-                  <Calendar className="absolute right-2 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 text-gray-400 pointer-events-none sm:hidden" />
-                </div>
-              </div>
-
-              {/* Tax Exemption Option */}
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Tax Status
-                </label>
-                <div className="flex items-center space-x-2 px-3 py-2 border border-gray-200 rounded h-10">
-                  <input
-                    type="checkbox"
-                    id="taxExemptMobile"
-                    checked={formData.isTaxExempt}
-                    onChange={(e) => setFormData(prev => ({ ...prev, isTaxExempt: e.target.checked }))}
-                    className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-                  />
-                  <div className="flex-1">
-                    <label htmlFor="taxExemptMobile" className="text-sm font-medium text-gray-700 cursor-pointer">
-                      Tax Exempt
+        <OrderCheckoutCard>
+          <OrderDetailsSection
+            detailsTitle="Purchase Order Details"
+            showDetails={showPurchaseOrderDetailsFields}
+            onShowDetailsChange={setShowPurchaseOrderDetailsFields}
+            checkboxId="showPurchaseOrderDetailsFields"
+            headerClassName="mb-0"
+          >
+            {showPurchaseOrderDetailsFields && (
+              <>
+                {/* Mobile Layout - Stacked */}
+                <div className="md:hidden space-y-3">
+                  {/* Invoice Number */}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Invoice Number
                     </label>
+                    <Input
+                      type="text"
+                      value={formData.invoiceNumber || "Auto-generated"}
+                      onChange={(e) => setFormData(prev => ({ ...prev, invoiceNumber: e.target.value }))}
+                      className="h-10 text-sm w-full"
+                      placeholder="Auto-generated"
+                      disabled
+                    />
                   </div>
-                  {formData.isTaxExempt && (
-                    <div className="text-green-600 text-sm font-medium">
-                      ✓
-                    </div>
-                  )}
-                </div>
-              </div>
 
-              {/* Notes */}
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Notes
-                </label>
-                <Input
-                  type="text"
-                  value={formData.notes}
-                  onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
-                  className="h-10 text-sm w-full"
-                  placeholder="Additional notes..."
-                />
-              </div>
-            </div>
-
-            {/* Desktop Layout - Horizontal */}
-            <div className="hidden md:flex flex-nowrap gap-3 items-end justify-end">
-              {/* Invoice Number */}
-              <div className="flex flex-col w-44">
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Invoice Number
-                </label>
-                <Input
-                  type="text"
-                  value={formData.invoiceNumber || "Auto-generated"}
-                  onChange={(e) => setFormData(prev => ({ ...prev, invoiceNumber: e.target.value }))}
-                  className="h-8 text-sm"
-                  placeholder="Auto-generated"
-                  disabled
-                />
-              </div>
-
-              {/* Expected Delivery */}
-              <div className="flex flex-col w-48">
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Expected Delivery
-                </label>
-                <Input
-                  type="date"
-                  value={formData.expectedDelivery}
-                  onChange={(e) => setFormData(prev => ({ ...prev, expectedDelivery: e.target.value }))}
-                  className="h-8 text-sm"
-                />
-              </div>
-
-              {/* Tax Exemption Option */}
-              <div className="flex flex-col w-40">
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Tax Status
-                </label>
-                <div className="flex items-center space-x-1 px-2 py-1 border border-gray-200 rounded h-8">
-                  <input
-                    type="checkbox"
-                    id="taxExempt"
-                    checked={formData.isTaxExempt}
-                    onChange={(e) => setFormData(prev => ({ ...prev, isTaxExempt: e.target.checked }))}
-                    className="h-3 w-3 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-                  />
-                  <div className="flex-1">
-                    <label htmlFor="taxExempt" className="text-xs font-medium text-gray-700 cursor-pointer">
-                      Tax Exempt
+                  {/* Expected Delivery */}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Expected Delivery
                     </label>
-                  </div>
-                  {formData.isTaxExempt && (
-                    <div className="text-green-600 text-xs font-medium">
-                      ✓
+                    <div className="relative">
+                      <Input
+                        type="date"
+                        value={formData.expectedDelivery}
+                        onChange={(e) => setFormData(prev => ({ ...prev, expectedDelivery: e.target.value }))}
+                        className="h-10 text-sm w-full pr-8"
+                      />
+                      <Calendar className="absolute right-2 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 text-gray-400 pointer-events-none sm:hidden" />
                     </div>
-                  )}
+                  </div>
+
+                  {/* Tax Exemption Option */}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Tax Status
+                    </label>
+                    <div className="flex items-center space-x-2 px-3 py-2 border border-gray-200 rounded h-10">
+                      <input
+                        type="checkbox"
+                        id="taxExemptMobile"
+                        checked={formData.isTaxExempt}
+                        onChange={(e) => setFormData(prev => ({ ...prev, isTaxExempt: e.target.checked }))}
+                        className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                      />
+                      <div className="flex-1">
+                        <label htmlFor="taxExemptMobile" className="text-sm font-medium text-gray-700 cursor-pointer">
+                          Tax Exempt
+                        </label>
+                      </div>
+                      {formData.isTaxExempt && (
+                        <div className="text-green-600 text-sm font-medium">
+                          ✓
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Notes */}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Notes
+                    </label>
+                    <Input
+                      type="text"
+                      value={formData.notes}
+                      onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
+                      className="h-10 text-sm w-full"
+                      placeholder="Additional notes..."
+                    />
+                  </div>
                 </div>
+
+                {/* Desktop Layout - Horizontal */}
+                <div className="hidden md:flex flex-nowrap gap-3 items-end justify-end">
+                  {/* Invoice Number */}
+                  <div className="flex flex-col w-44">
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Invoice Number
+                    </label>
+                    <Input
+                      type="text"
+                      value={formData.invoiceNumber || "Auto-generated"}
+                      onChange={(e) => setFormData(prev => ({ ...prev, invoiceNumber: e.target.value }))}
+                      className="h-8 text-sm"
+                      placeholder="Auto-generated"
+                      disabled
+                    />
+                  </div>
+
+                  {/* Expected Delivery */}
+                  <div className="flex flex-col w-48">
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Expected Delivery
+                    </label>
+                    <Input
+                      type="date"
+                      value={formData.expectedDelivery}
+                      onChange={(e) => setFormData(prev => ({ ...prev, expectedDelivery: e.target.value }))}
+                      className="h-8 text-sm"
+                    />
+                  </div>
+
+                  {/* Tax Exemption Option */}
+                  <div className="flex flex-col w-40">
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Tax Status
+                    </label>
+                    <div className="flex items-center space-x-1 px-2 py-1 border border-gray-200 rounded h-8">
+                      <input
+                        type="checkbox"
+                        id="taxExempt"
+                        checked={formData.isTaxExempt}
+                        onChange={(e) => setFormData(prev => ({ ...prev, isTaxExempt: e.target.checked }))}
+                        className="h-3 w-3 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                      />
+                      <div className="flex-1">
+                        <label htmlFor="taxExempt" className="text-xs font-medium text-gray-700 cursor-pointer">
+                          Tax Exempt
+                        </label>
+                      </div>
+                      {formData.isTaxExempt && (
+                        <div className="text-green-600 text-xs font-medium">
+                          ✓
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Notes */}
+                  <div className="flex flex-col w-[28rem]">
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Notes
+                    </label>
+                    <Input
+                      type="text"
+                      autoComplete="off"
+                      value={formData.notes}
+                      onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
+                      className="h-8 text-sm"
+                      placeholder="Additional notes..."
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+          </OrderDetailsSection>
+
+          <OrderSummaryBar />
+          <OrderSummaryContent>
+            <div className="mb-6 space-y-3">
+              <div className="flex justify-between items-center">
+                <span className="text-gray-800 font-semibold">Subtotal:</span>
+                <span className="text-xl font-bold text-gray-900">{Math.round(subtotal)}</span>
               </div>
-
-              {/* Notes */}
-              <div className="flex flex-col w-[28rem]">
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Notes
-                </label>
-                <Input
-                  type="text"
-                  autoComplete="off"
-                  value={formData.notes}
-                  onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
-                  className="h-8 text-sm"
-                  placeholder="Additional notes..."
-                />
+              <div className="flex justify-between items-center">
+                <span className="text-gray-800 font-semibold">
+                  {formData.isTaxExempt ? 'Tax (Exempt):' : 'Tax (8%):'}
+                </span>
+                <span className="text-xl font-bold text-gray-900">{Math.round(tax)}</span>
               </div>
-            </div>
-
-            {/* Order Summary Section */}
-            <div className="bg-gradient-to-r from-blue-500 to-indigo-600 px-6 py-4 border-t border-blue-200 mt-6">
-              <h3 className="text-lg font-semibold text-white">Order Summary</h3>
-            </div>
-
-            {/* Order Summary Details */}
-            <div className="px-6 py-4">
-              <div className="space-y-3 mb-6">
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-800 font-semibold">Subtotal:</span>
-                  <span className="text-xl font-bold text-gray-900">{Math.round(subtotal)}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-800 font-semibold">
-                    {formData.isTaxExempt ? 'Tax (Exempt):' : 'Tax (8%):'}
-                  </span>
-                  <span className="text-xl font-bold text-gray-900">{Math.round(tax)}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-800 font-semibold">PO Total:</span>
-                  <span className="text-xl font-bold text-gray-900">{Math.round(total)}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-800 font-semibold">Previous Outstanding:</span>
-                  <span className="text-xl font-bold text-red-600">{Math.round(supplierOutstanding)}</span>
-                </div>
-                <div className="flex justify-between items-center text-xl font-bold border-t-2 border-blue-400 pt-3 mt-2">
-                  <span className="text-blue-900">Total Payables:</span>
-                  <span className="text-blue-900 text-3xl">{Math.round(totalPayables)}</span>
-                </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-800 font-semibold">PO Total:</span>
+                <span className="text-xl font-bold text-gray-900">{Math.round(total)}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-800 font-semibold">Previous Outstanding:</span>
+                <span className="text-xl font-bold text-red-600">{Math.round(supplierOutstanding)}</span>
+              </div>
+              <div className="flex justify-between items-center text-xl font-bold border-t-2 border-blue-400 pt-3 mt-2">
+                <span className="text-blue-900">Total Payables:</span>
+                <span className="text-blue-900 text-3xl">{Math.round(totalPayables)}</span>
               </div>
             </div>
 
             {/* Action Buttons */}
-            <div className="flex space-x-3 mt-6 px-6 pb-6">
+            <OrderCheckoutActions className="mt-6 border-0 pt-0">
               {formData.items.length > 0 && !showEditModal && (
                 <Button
                   onClick={resetForm}
@@ -2124,9 +2147,9 @@ export const PurchaseOrders = ({ tabId }) => {
                 <Save className="h-4 w-4 mr-2" />
                 {creating ? 'Creating...' : 'Create Purchase Order'}
               </Button>
-            </div>
-          </div>
-        </div>
+            </OrderCheckoutActions>
+          </OrderSummaryContent>
+        </OrderCheckoutCard>
       )}
 
       {/* Edit Modal */}
@@ -2163,14 +2186,17 @@ export const PurchaseOrders = ({ tabId }) => {
               </div>
 
               {/* Purchase Order Details */}
-              <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-lg mb-6">
-                {/* Purchase Details Section */}
-                <div className="px-6 py-4 border-b border-blue-200">
-                  <h3 className="text-lg font-medium text-gray-900 text-right">
-                    Edit Purchase Order Details
-                  </h3>
+              <OrderCheckoutCard className="mb-6 ml-0 mt-0 max-w-none">
+                <div className="border-b border-blue-200/60 bg-white/40 px-5 py-4 sm:px-7">
+                  <ShowDetailsSectionHeader
+                    title="Edit Purchase Order Details"
+                    showDetails={showPurchaseOrderDetailsFields}
+                    onShowDetailsChange={setShowPurchaseOrderDetailsFields}
+                    checkboxId="showPurchaseOrderDetailsFieldsEdit"
+                    titleClassName="text-lg"
+                  />
                 </div>
-                <div className="px-6 py-4">
+                <div className="px-5 py-4 sm:px-7">
                   {/* Supplier Selection */}
                   <div className="mb-4">
                     <div className="flex flex-col">
@@ -2222,87 +2248,91 @@ export const PurchaseOrders = ({ tabId }) => {
                     </div>
                   </div>
 
-                  {/* Single Row Layout for Purchase Order Details */}
-                  <div className="flex flex-nowrap gap-3 items-end justify-end">
-                    {/* Invoice Number */}
-                    <div className="flex flex-col w-44">
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
-                        Invoice Number
-                      </label>
-                      <Input
-                        type="text"
-                        value={formData.invoiceNumber || "Auto-generated"}
-                        onChange={(e) => setFormData(prev => ({ ...prev, invoiceNumber: e.target.value }))}
-                        className="h-8 text-sm"
-                        placeholder="Auto-generated"
-                        disabled
-                      />
-                    </div>
+                  {showPurchaseOrderDetailsFields && (
+                    <>
+                      {/* Single Row Layout for Purchase Order Details */}
+                      <div className="flex flex-nowrap gap-3 items-end justify-end">
+                        {/* Invoice Number */}
+                        <div className="flex flex-col w-44">
+                          <label className="block text-xs font-medium text-gray-700 mb-1">
+                            Invoice Number
+                          </label>
+                          <Input
+                            type="text"
+                            value={formData.invoiceNumber || "Auto-generated"}
+                            onChange={(e) => setFormData(prev => ({ ...prev, invoiceNumber: e.target.value }))}
+                            className="h-8 text-sm"
+                            placeholder="Auto-generated"
+                            disabled
+                          />
+                        </div>
 
-                    {/* Expected Delivery */}
-                    <div className="flex flex-col w-48">
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
-                        Expected Delivery
-                      </label>
-                      <Input
-                        type="date"
-                        autoComplete="off"
-                        value={formData.expectedDelivery}
-                        onChange={(e) => setFormData(prev => ({ ...prev, expectedDelivery: e.target.value }))}
-                        className="h-8 text-sm"
-                      />
-                    </div>
+                        {/* Expected Delivery */}
+                        <div className="flex flex-col w-48">
+                          <label className="block text-xs font-medium text-gray-700 mb-1">
+                            Expected Delivery
+                          </label>
+                          <Input
+                            type="date"
+                            autoComplete="off"
+                            value={formData.expectedDelivery}
+                            onChange={(e) => setFormData(prev => ({ ...prev, expectedDelivery: e.target.value }))}
+                            className="h-8 text-sm"
+                          />
+                        </div>
 
-                    {/* Tax Exemption Option */}
-                    <div className="flex flex-col w-40">
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
-                        Tax Status
-                      </label>
-                      <div className="flex items-center space-x-1 px-2 py-1 border border-gray-200 rounded h-8">
-                        <input
-                          type="checkbox"
-                          id="taxExemptEdit"
-                          checked={formData.isTaxExempt}
-                          onChange={(e) => setFormData(prev => ({ ...prev, isTaxExempt: e.target.checked }))}
-                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <label htmlFor="taxExemptEdit" className="text-xs text-gray-700">
-                          Tax Exempt
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Notes and Terms Row */}
-                  <div className="mt-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      {/* Notes Column */}
-                      <div className="flex flex-col">
-                        <label className="block text-xs font-medium text-gray-700 mb-1">
-                          Notes
-                        </label>
-                        <Textarea
-                          value={formData.notes}
-                          onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
-                          className="h-16 text-sm resize-none"
-                          placeholder="Add any notes or comments..."
-                        />
+                        {/* Tax Exemption Option */}
+                        <div className="flex flex-col w-40">
+                          <label className="block text-xs font-medium text-gray-700 mb-1">
+                            Tax Status
+                          </label>
+                          <div className="flex items-center space-x-1 px-2 py-1 border border-gray-200 rounded h-8">
+                            <input
+                              type="checkbox"
+                              id="taxExemptEdit"
+                              checked={formData.isTaxExempt}
+                              onChange={(e) => setFormData(prev => ({ ...prev, isTaxExempt: e.target.checked }))}
+                              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            <label htmlFor="taxExemptEdit" className="text-xs text-gray-700">
+                              Tax Exempt
+                            </label>
+                          </div>
+                        </div>
                       </div>
 
-                      {/* Terms Column */}
-                      <div className="flex flex-col">
-                        <label className="block text-xs font-medium text-gray-700 mb-1">
-                          Terms & Conditions
-                        </label>
-                        <Textarea
-                          value={formData.terms}
-                          onChange={(e) => setFormData(prev => ({ ...prev, terms: e.target.value }))}
-                          className="h-16 text-sm resize-none"
-                          placeholder="Add terms and conditions..."
-                        />
+                      {/* Notes and Terms Row */}
+                      <div className="mt-4">
+                        <div className="grid grid-cols-2 gap-4">
+                          {/* Notes Column */}
+                          <div className="flex flex-col">
+                            <label className="block text-xs font-medium text-gray-700 mb-1">
+                              Notes
+                            </label>
+                            <Textarea
+                              value={formData.notes}
+                              onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
+                              className="h-16 text-sm resize-none"
+                              placeholder="Add any notes or comments..."
+                            />
+                          </div>
+
+                          {/* Terms Column */}
+                          <div className="flex flex-col">
+                            <label className="block text-xs font-medium text-gray-700 mb-1">
+                              Terms & Conditions
+                            </label>
+                            <Textarea
+                              value={formData.terms}
+                              onChange={(e) => setFormData(prev => ({ ...prev, terms: e.target.value }))}
+                              className="h-16 text-sm resize-none"
+                              placeholder="Add terms and conditions..."
+                            />
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </div>
+                    </>
+                  )}
                 </div>
 
                 {/* Product Selection & Cart Items */}
@@ -2590,8 +2620,8 @@ export const PurchaseOrders = ({ tabId }) => {
                 </div>
 
                 {/* Order Items Summary */}
-                <div className="px-6 py-4 border-t border-blue-200">
-                  <h4 className="text-sm font-medium text-gray-900 mb-3">Order Items Summary</h4>
+                <div className="border-t border-blue-200 px-6 py-4">
+                  <h4 className="mb-3 text-sm font-medium text-gray-900">Order Items Summary</h4>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="bg-white rounded-lg p-3 border border-gray-200">
                       <div className="text-xs text-gray-600 mb-1">Total Items</div>
@@ -2650,7 +2680,7 @@ export const PurchaseOrders = ({ tabId }) => {
                     {updating ? 'Updating...' : 'Update Purchase Order'}
                   </button>
                 </div>
-              </div>
+              </OrderCheckoutCard>
             </div>
           </div>
         </div>
@@ -2735,6 +2765,19 @@ export const PurchaseOrders = ({ tabId }) => {
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="sm:col-span-2 lg:col-span-12 flex items-start gap-2 pt-2 border-t border-gray-100 mt-1">
+              <input
+                type="checkbox"
+                id="po-offer-barcode-labels"
+                checked={printBarcodeLabelsAfterPoConfirm}
+                onChange={(e) => setPrintBarcodeLabelsAfterPoConfirm(e.target.checked)}
+                className="rounded border-gray-300 text-primary-600 focus:ring-primary-500 mt-1"
+              />
+              <label htmlFor="po-offer-barcode-labels" className="text-sm text-gray-700 cursor-pointer">
+                After confirming a draft PO (receipt), open barcode label printer — copies default to line quantity (barcode or SKU per product)
+              </label>
             </div>
 
             {/* Payment Status Filter */}
@@ -2876,7 +2919,7 @@ export const PurchaseOrders = ({ tabId }) => {
                           {order.status === 'draft' && (
                             <>
                               <button
-                                onClick={() => handleConfirm(order.id || order._id)}
+                                onClick={() => handleConfirm(order)}
                                 className="text-green-600 hover:text-green-900"
                                 title="Confirm Order"
                               >
@@ -3063,6 +3106,17 @@ export const PurchaseOrders = ({ tabId }) => {
                               {item.product?.description && typeof item.product === 'object' && (
                                 <div className="text-gray-500 text-xs">{safeRender(item.product.description)}</div>
                               )}
+                              {(() => {
+                                const p =
+                                  typeof item.product === 'object' && item.product !== null
+                                    ? item.product
+                                    : item.productData || {};
+                                const b = (p.barcode ?? '').toString().trim();
+                                if (b) return <div className="text-gray-600 text-xs font-mono mt-0.5">Barcode: {b}</div>;
+                                const s = (p.sku ?? '').toString().trim();
+                                if (s) return <div className="text-gray-600 text-xs font-mono mt-0.5">SKU: {s}</div>;
+                                return null;
+                              })()}
                             </div>
                           </td>
                           <td className="px-4 py-3 text-sm text-gray-900 text-right border-b border-gray-200">
@@ -3187,6 +3241,38 @@ export const PurchaseOrders = ({ tabId }) => {
         documentTitle="Purchase Order"
         partyLabel="Supplier"
       />
+
+      {showReceiptLabelPrinter && (
+        <BarcodeLabelPrinter
+          products={receiptLabelProducts}
+          quantityMode
+          modalTitle="Print labels — purchase order receipt"
+          onClose={() => {
+            setShowReceiptLabelPrinter(false);
+            setReceiptLabelProducts([]);
+          }}
+        />
+      )}
+
+      {/* Product Image Preview Modal */}
+      <BaseModal
+        isOpen={!!previewImageProduct}
+        onClose={() => setPreviewImageProduct(null)}
+        title={previewImageProduct?.displayName || previewImageProduct?.variantName || previewImageProduct?.name || 'Product Image'}
+      >
+        <div className="flex justify-center items-center bg-gray-50 rounded-lg overflow-hidden min-h-[300px] p-4">
+          {previewImageProduct?.imageUrl ? (
+            <img 
+              src={previewImageProduct.imageUrl} 
+              alt="Product Preview" 
+              className="max-w-full max-h-[70vh] object-contain"
+            />
+          ) : (
+            <div className="text-gray-400">No image available</div>
+          )}
+        </div>
+      </BaseModal>
+
     </div>
   );
 };

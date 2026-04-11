@@ -7,7 +7,6 @@ import {
   Edit,
   Trash2,
   Eye,
-  Download,
   RefreshCw,
   ArrowUpDown,
   Calendar,
@@ -30,11 +29,7 @@ import {
   useCreateBankPaymentMutation,
   useUpdateBankPaymentMutation,
   useDeleteBankPaymentMutation,
-  useExportExcelMutation,
-  useExportCSVMutation,
-  useExportPDFMutation,
-  useExportJSONMutation,
-  useDownloadFileMutation,
+
 } from '../store/services/bankPaymentsApi';
 import { useGetSuppliersQuery } from '../store/services/suppliersApi';
 import { useGetCustomersQuery } from '../store/services/customersApi';
@@ -42,6 +37,7 @@ import { useGetAccountsQuery } from '../store/services/chartOfAccountsApi';
 import { useGetBanksQuery } from '../store/services/banksApi';
 import DateFilter from '../components/DateFilter';
 import { getCurrentDatePakistan, formatDateForInput } from '../utils/dateUtils';
+
 
 const BankPayments = () => {
   const today = getCurrentDatePakistan();
@@ -68,6 +64,7 @@ const BankPayments = () => {
   const [showEditModal, setShowEditModal] = useState(false);
   const [showViewModal, setShowViewModal] = useState(false);
   const [showPrintModal, setShowPrintModal] = useState(false);
+
   const [selectedPayment, setSelectedPayment] = useState(null);
   const [printData, setPrintData] = useState(null);
 
@@ -178,6 +175,7 @@ const BankPayments = () => {
   const [createBankPayment, { isLoading: creating }] = useCreateBankPaymentMutation();
   const [updateBankPayment, { isLoading: updating }] = useUpdateBankPaymentMutation();
   const [deleteBankPayment, { isLoading: deleting }] = useDeleteBankPaymentMutation();
+
 
   // Helper functions
   const resetForm = () => {
@@ -566,58 +564,7 @@ const BankPayments = () => {
     setShowViewModal(true);
   };
 
-  const handleExport = async (format = 'csv') => {
-    try {
-      const payload = { ...filters, ...pagination, sortConfig };
-      let response;
-      if (format === 'excel') {
-        response = await exportExcelMutation(payload).unwrap();
-      } else if (format === 'pdf') {
-        response = await exportPDFMutation(payload).unwrap();
-      } else if (format === 'json') {
-        response = await exportJSONMutation(payload).unwrap();
-      } else {
-        response = await exportCSVMutation(payload).unwrap();
-      }
 
-      const filename =
-        response?.filename ||
-        (format === 'excel'
-          ? 'bank_payments.xlsx'
-          : format === 'pdf'
-            ? 'bank_payments.pdf'
-            : format === 'json'
-              ? 'bank_payments.json'
-              : 'bank_payments.csv');
-
-      const downloadResponse = await downloadFileMutation(filename).unwrap();
-      const blob =
-        downloadResponse instanceof Blob
-          ? downloadResponse
-          : new Blob([downloadResponse], {
-            type:
-              format === 'excel'
-                ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-                : format === 'pdf'
-                  ? 'application/pdf'
-                  : format === 'json'
-                    ? 'application/json'
-                    : 'text/csv',
-          });
-
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      showSuccessToast(`Exported bank payments as ${format.toUpperCase()}`);
-    } catch (error) {
-      showErrorToast(handleApiError(error, 'Bank Payments Export'));
-    }
-  };
 
   const handlePrint = (payment) => {
     setPrintData(payment);
@@ -650,15 +597,7 @@ const BankPayments = () => {
           <p className="text-sm sm:text-base text-gray-600 mt-1">Manage and view all bank payment transactions</p>
         </div>
         <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 w-full sm:w-auto">
-          <Button
-            onClick={handleExport}
-            variant="outline"
-            size="default"
-            className="flex items-center justify-center gap-2 w-full sm:w-auto"
-          >
-            <Download className="h-4 w-4" />
-            <span>Export</span>
-          </Button>
+
           <Button
             onClick={resetForm}
             variant="default"
@@ -1478,6 +1417,8 @@ const BankPayments = () => {
           )}
         </div>
       </div>
+
+
 
       {/* Payment print modal – dedicated layout for payments only */}
       <ReceiptPaymentPrintModal

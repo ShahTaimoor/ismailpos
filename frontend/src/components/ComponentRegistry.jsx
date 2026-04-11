@@ -5,7 +5,7 @@ const componentLoader = {
   '/dashboard': () => import('../pages/Dashboard').then(module => module.default || module.Dashboard),
   '/sales': () => import('../pages/Sales').then(module => module.Sales),
   '/purchase': () => import('../pages/Purchase').then(module => module.Purchase),
-  '/products': () => import('../pages/Products').then(module => module.Products),
+  '/products': () => import('../pages/Products').then(module => module.default || module.Products),
   '/customers': () => import('../pages/Customers').then(module => module.Customers),
   '/customer-analytics': () => import('../pages/CustomerAnalytics').then(module => module.default || module.CustomerAnalytics),
   '/suppliers': () => import('../pages/Suppliers').then(module => module.Suppliers),
@@ -21,7 +21,7 @@ const componentLoader = {
   '/purchase-by-supplier': () => import('../pages/PurchaseBySupplierReport').then(module => module.default),
   '/reports': () => import('../pages/Reports').then(module => module.Reports),
   '/pl-statements': () => import('../pages/PLStatements').then(module => module.PLStatements),
-  '/balance-sheets': () => import('../pages/BalanceSheets').then(module => module.default),
+  '/balance-sheet-statement': () => import('../pages/BalanceSheetStatement').then(module => module.BalanceSheetStatement),
   '/discounts': () => import('../pages/Discounts').then(module => module.default),
   '/sales-performance': () => import('../pages/SalesPerformanceReports').then(module => module.default),
   '/inventory-reports': () => import('../pages/InventoryReports').then(module => module.default),
@@ -129,8 +129,8 @@ export const componentRegistry = {
     title: 'P&L Statements',
     icon: 'BarChart3'
   },
-  '/balance-sheets': {
-    title: 'Balance Sheets',
+  '/balance-sheet-statement': {
+    title: 'Balance Sheet',
     icon: 'FileText'
   },
   '/discounts': {
@@ -175,7 +175,7 @@ export const componentRegistry = {
     allowMultiple: true
   },
   '/cities': {
-    title: 'Countries',
+    title: 'Cities',
     icon: 'MapPin'
   },
   '/settings': {

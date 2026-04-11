@@ -1,9 +1,5 @@
 const express = require('express');
-const { body, validationResult, query } = require('express-validator');
-const multer = require('multer');
-const csv = require('csv-parser');
-const createCsvWriter = require('csv-writer').createObjectCsvWriter;
-const XLSX = require('xlsx');
+const { body, param, validationResult, query } = require('express-validator');
 const fs = require('fs');
 const path = require('path');
 const { auth, requirePermission } = require('../middleware/auth');
@@ -15,6 +11,31 @@ const costingService = require('../services/costingService');
 
 const router = express.Router();
 
+// Import: parse price cells — empty / invalid / text → null; numbers clamped to >= 0
+const coerceImportPrice = (value) => {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, value);
+  const s = String(value).trim().replace(/,/g, '').replace(/^\s*(?:[$€£]|Rs\.?)\s*/i, '');
+  if (s === '' || s === '-' || /^n\/?a$/i.test(s)) return null;
+  const n = parseFloat(s);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, n);
+};
+
+// Import text normalizer:
+// keep symbols like "&" as-is, and decode common HTML entities
+const normalizeImportText = (value) => {
+  if (value === undefined || value === null) return '';
+  return String(value)
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#x27;|&#39;/gi, "'")
+    .replace(/&#x2f;|&#47;/gi, '/')
+    .trim();
+};
+
 // Helper function to transform product names to uppercase
 const transformProductToUppercase = (product) => {
   if (!product) return product;
@@ -25,26 +46,8 @@ const transformProductToUppercase = (product) => {
   return product;
 };
 
-// Configure multer for file uploads
-const upload = multer({
-  dest: 'uploads/',
-  fileFilter: (req, file, cb) => {
-    const allowedMimes = [
-      'text/csv',
-      'application/vnd.ms-excel',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    ];
-    
-    if (allowedMimes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Only CSV and Excel files are allowed.'), false);
-    }
-  },
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
-  }
-});
+
+
 
 // @route   GET /api/products
 // @desc    Get all products with filtering and pagination
@@ -189,6 +192,13 @@ router.post('/', [
   auth,
   requirePermission('create_products'),
   body('name').trim().isLength({ min: 1 }).withMessage('Product name is required'),
+  body('unit').optional().isIn(['PCS', 'U', 'KG', 'G', 'L', 'ML', 'MTR', 'SQFT', 'BOX', 'CTN', 'SET', 'PAIR']).withMessage('Invalid unit of measurement'),
+  body('countryOfOrigin').optional().trim().isLength({ max: 120 }).withMessage('Country of origin is too long'),
+  body('netWeightKg').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('Net weight must be a non-negative number'),
+  body('grossWeightKg').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('Gross weight must be a non-negative number'),
+  body('importRefNo').optional().trim().isLength({ max: 120 }).withMessage('Import reference is too long'),
+  body('gdNumber').optional().trim().isLength({ max: 120 }).withMessage('GD number is too long'),
+  body('invoiceRef').optional().trim().isLength({ max: 120 }).withMessage('Invoice reference is too long'),
   body('pricing.cost').isFloat({ min: 0 }).withMessage('Cost must be a positive number'),
   body('pricing.retail').isFloat({ min: 0 }).withMessage('Retail price must be a positive number'),
   body('pricing.wholesale').isFloat({ min: 0 }).withMessage('Wholesale price must be a positive number')
@@ -262,6 +272,13 @@ router.put('/:id', [
   auth,
   requirePermission('edit_products'),
   body('name').optional().trim().isLength({ min: 1 }),
+  body('unit').optional().isIn(['PCS', 'U', 'KG', 'G', 'L', 'ML', 'MTR', 'SQFT', 'BOX', 'CTN', 'SET', 'PAIR']).withMessage('Invalid unit of measurement'),
+  body('countryOfOrigin').optional().trim().isLength({ max: 120 }).withMessage('Country of origin is too long'),
+  body('netWeightKg').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('Net weight must be a non-negative number'),
+  body('grossWeightKg').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('Gross weight must be a non-negative number'),
+  body('importRefNo').optional().trim().isLength({ max: 120 }).withMessage('Import reference is too long'),
+  body('gdNumber').optional().trim().isLength({ max: 120 }).withMessage('GD number is too long'),
+  body('invoiceRef').optional().trim().isLength({ max: 120 }).withMessage('Invoice reference is too long'),
   body('pricing.cost').optional().isFloat({ min: 0 }),
   body('pricing.retail').optional().isFloat({ min: 0 }),
   body('pricing.wholesale').optional().isFloat({ min: 0 })
@@ -459,729 +476,26 @@ router.post('/:id/price-check', [
   }
 });
 
-// @route   POST /api/products/export/csv
-// @desc    Export products to CSV
-// @access  Private
-router.post('/export/csv', [auth, requirePermission('view_products')], async (req, res) => {
-  try {
-    const { filters = {} } = req.body;
-    
-    // Call service to get products for export
-    const products = await productService.getProductsForExport(filters);
-    
-    // Prepare CSV data with proper string conversion
-    const csvData = products.map(product => ({
-      name: String(product.name || ''),
-      description: String(product.description || ''),
-      category: String(product.category?.name || ''),
-      brand: String(product.brand || ''),
-      barcode: String(product.barcode || ''),
-      sku: String(product.sku || ''),
-      cost: String(product.pricing?.cost || 0),
-      retail: String(product.pricing?.retail || 0),
-      wholesale: String(product.pricing?.wholesale || 0),
-      distributor: String(product.pricing?.distributor || 0),
-      currentStock: String(product.inventory?.currentStock || 0),
-      minStock: String(product.inventory?.minStock || 0),
-      maxStock: String(product.inventory?.maxStock || 0),
-      reorderPoint: String(product.inventory?.reorderPoint || 0),
-      weight: String(product.weight || 0),
-      status: String(product.status || 'active'),
-      taxable: String(product.taxSettings?.taxable || true),
-      taxRate: String(product.taxSettings?.taxRate || 0),
-      createdAt: String(product.createdAt?.toISOString().split('T')[0] || '')
-    }));
-    
-    // Ensure exports directory exists
-    if (!fs.existsSync('exports')) {
-      fs.mkdirSync('exports');
-    }
-    
-    // Generate unique filename with timestamp
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `products_${timestamp}.csv`;
-    
-    // Create CSV file
-    const csvWriter = createCsvWriter({
-      path: `exports/${filename}`,
-      header: [
-        { id: 'name', title: 'Product Name' },
-        { id: 'description', title: 'Description' },
-        { id: 'category', title: 'Category' },
-        { id: 'brand', title: 'Brand' },
-        { id: 'barcode', title: 'Barcode' },
-        { id: 'sku', title: 'SKU' },
-        { id: 'cost', title: 'Cost Price' },
-        { id: 'retail', title: 'Retail Price' },
-        { id: 'wholesale', title: 'Wholesale Price' },
-        { id: 'distributor', title: 'Distributor Price' },
-        { id: 'currentStock', title: 'Current Stock' },
-        { id: 'minStock', title: 'Min Stock' },
-        { id: 'maxStock', title: 'Max Stock' },
-        { id: 'reorderPoint', title: 'Reorder Point' },
-        { id: 'weight', title: 'Weight' },
-        { id: 'status', title: 'Status' },
-        { id: 'taxable', title: 'Taxable' },
-        { id: 'taxRate', title: 'Tax Rate' },
-        { id: 'createdAt', title: 'Created Date' }
-      ]
-    });
-    
-    await csvWriter.writeRecords(csvData);
-    
-    res.json({
-      message: 'Products exported successfully',
-      filename: filename,
-      recordCount: csvData.length,
-      downloadUrl: `/api/products/download/${filename}`
-    });
-    
-  } catch (error) {
-    console.error('CSV export error:', error);
-    res.status(500).json({ message: 'Export failed' });
-  }
-});
 
-// @route   POST /api/products/export/excel
-// @desc    Export products to Excel
-// @access  Private
-router.post('/export/excel', [auth, requirePermission('view_products')], async (req, res) => {
-  try {
-    const { filters = {} } = req.body;
-    
-    // Call service to get products for export
-    const products = await productService.getProductsForExport(filters);
-    
-    // Helper function to safely convert any value to string
-    const safeString = (value) => {
-      if (value === null || value === undefined) return '';
-      if (typeof value === 'object') {
-        // If it's an object with a name property, use that
-        if (value.name) return String(value.name);
-        // If it's a date object, format it
-        if (value instanceof Date) return value.toISOString().split('T')[0];
-        // Otherwise, stringify the object
-        return JSON.stringify(value);
-      }
-      return String(value);
-    };
 
-    // Helper function to safely convert to number
-    const safeNumber = (value) => {
-      if (value === null || value === undefined) return 0;
-      if (typeof value === 'object') {
-        // If it's an object with a numeric property, extract it
-        if (typeof value.cost === 'number') return value.cost;
-        if (typeof value.retail === 'number') return value.retail;
-        if (typeof value.wholesale === 'number') return value.wholesale;
-        if (typeof value.currentStock === 'number') return value.currentStock;
-        if (typeof value.reorderPoint === 'number') return value.reorderPoint;
-        return 0;
-      }
-      const num = Number(value);
-      return isNaN(num) ? 0 : num;
-    };
 
-    // Prepare Excel data with proper data types and object handling
-    const excelData = products.map(product => ({
-      'Product Name': safeString(product.name),
-      'Description': safeString(product.description),
-      'Category': safeString(product.category?.name || product.category),
-      'Brand': safeString(product.brand),
-      'Barcode': safeString(product.barcode),
-      'SKU': safeString(product.sku),
-      'Cost Price': safeNumber(product.pricing?.cost),
-      'Retail Price': safeNumber(product.pricing?.retail),
-      'Wholesale Price': safeNumber(product.pricing?.wholesale),
-      'Distributor Price': safeNumber(product.pricing?.distributor),
-      'Current Stock': safeNumber(product.inventory?.currentStock),
-      'Min Stock': safeNumber(product.inventory?.minStock),
-      'Max Stock': safeNumber(product.inventory?.maxStock),
-      'Reorder Point': safeNumber(product.inventory?.reorderPoint),
-      'Weight': safeNumber(product.weight),
-      'Status': safeString(product.status),
-      'Taxable': safeString(product.taxSettings?.taxable),
-      'Tax Rate': safeNumber(product.taxSettings?.taxRate),
-      'Created Date': safeString(product.createdAt)
-    }));
-    
-    // Create Excel workbook with proper options
-    const workbook = XLSX.utils.book_new();
-    
-    // Create worksheet from JSON data
-    const worksheet = XLSX.utils.json_to_sheet(excelData, {
-      header: Object.keys(excelData[0] || {}),
-      skipHeader: false
-    });
-    
-    // Set column widths
-    const columnWidths = [
-      { wch: 25 }, // Product Name
-      { wch: 30 }, // Description
-      { wch: 15 }, // Category
-      { wch: 20 }, // Supplier
-      { wch: 12 }, // Cost Price
-      { wch: 12 }, // Retail Price
-      { wch: 15 }, // Wholesale Price
-      { wch: 12 }, // Current Stock
-      { wch: 12 }, // Reorder Point
-      { wch: 10 }, // Status
-      { wch: 12 }  // Created Date
-    ];
-    worksheet['!cols'] = columnWidths;
-    
-    // Add worksheet to workbook with proper options
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Products', true);
-    
-    // Ensure exports directory exists
-    if (!fs.existsSync('exports')) {
-      fs.mkdirSync('exports');
-    }
-    
-    // Generate unique filename with timestamp
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `products_${timestamp}.xlsx`;
-    const filepath = path.join('exports', filename);
-    
-    try {
-      // Write Excel file with proper options
-      XLSX.writeFile(workbook, filepath, {
-        bookType: 'xlsx',
-        type: 'file'
-      });
-      
-      // Verify file was created and has content
-      if (!fs.existsSync(filepath)) {
-        throw new Error('Failed to create Excel file');
-      }
-      
-      const stats = fs.statSync(filepath);
-      if (stats.size === 0) {
-        throw new Error('Excel file was created but is empty');
-      }
-      
-      
-    } catch (xlsxError) {
-      console.error('XLSX write error:', xlsxError);
-      
-      // Fallback: Create a simple CSV file instead
-      const csvFilename = filename.replace('.xlsx', '.csv');
-      const csvFilepath = path.join('exports', csvFilename);
-      
-      // Convert to CSV format with proper escaping
-      const csvContent = [
-        Object.keys(excelData[0] || {}).join(','),
-        ...excelData.map(row => Object.values(row).map(val => {
-          const strVal = String(val || '');
-          // Escape quotes and wrap in quotes if contains comma, quote, or newline
-          if (strVal.includes(',') || strVal.includes('"') || strVal.includes('\n')) {
-            return `"${strVal.replace(/"/g, '""')}"`;
-          }
-          return strVal;
-        }).join(','))
-      ].join('\n');
-      
-      fs.writeFileSync(csvFilepath, csvContent, 'utf8');
-      
-      
-      // Return CSV file info instead
-      res.json({
-        message: 'Products exported successfully (CSV format due to Excel compatibility issue)',
-        filename: csvFilename,
-        recordCount: excelData.length,
-        downloadUrl: `/api/products/download/${csvFilename}`
-      });
-      return;
-    }
-    
-    res.json({
-      message: 'Products exported successfully',
-      filename: filename,
-      recordCount: excelData.length,
-      downloadUrl: `/api/products/download/${filename}`
-    });
-    
-  } catch (error) {
-    console.error('Excel export error:', error);
-    res.status(500).json({ 
-      message: 'Export failed', 
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-    });
-  }
-});
 
-// @route   GET /api/products/download/:filename
-// @desc    Download exported file
-// @access  Private
-router.get('/download/:filename', [auth, requirePermission('view_products')], (req, res) => {
-  try {
-    const filename = req.params.filename;
-    const filepath = path.join('exports', filename);
-    
-    if (!fs.existsSync(filepath)) {
-      return res.status(404).json({ message: 'File not found' });
-    }
-    
-    // Set proper headers based on file type
-    const ext = path.extname(filename).toLowerCase();
-    let contentType = 'application/octet-stream';
-    
-    if (ext === '.xlsx') {
-      contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-    } else if (ext === '.csv') {
-      contentType = 'text/csv';
-    }
-    
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    
-    const fileStream = fs.createReadStream(filepath);
-    fileStream.pipe(res);
-    
-    fileStream.on('error', (err) => {
-      console.error('File stream error:', err);
-      if (!res.headersSent) {
-        res.status(500).json({ message: 'Download failed' });
-      }
-    });
-    
-  } catch (error) {
-    console.error('Download error:', error);
-    res.status(500).json({ message: 'Download failed' });
-  }
-});
 
-// @route   POST /api/products/import/csv
-// @desc    Import products from CSV
-// @access  Private
-router.post('/import/csv', [
-  auth,
-  requirePermission('create_products'),
-  upload.single('file')
-], async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ message: 'No file uploaded' });
-    }
-    
-    const results = {
-      total: 0,
-      success: 0,
-      errors: []
-    };
-    
-    const products = [];
-    
-    // Parse CSV file
-    fs.createReadStream(req.file.path)
-      .pipe(csv())
-      .on('data', (row) => {
-        products.push(row);
-      })
-      .on('end', async () => {
-        results.total = products.length;
-        
-        for (let i = 0; i < products.length; i++) {
-          try {
-            const row = products[i];
 
-            // Map CSV columns to our internal field names.
-            // This supports both exported/template headers like "Product Name"
-            // and simpler keys like "name", "cost", etc.
-            const mapped = {
-              name: row['Product Name'] || row['Name'] || row['Product'] || row.name,
-              description: row['Description'] || row['description'] || row.description || '',
-              category: row['Category'] || row['category'] || row.category || 'Uncategorized',
-              brand: row['Brand'] || row['brand'] || row.brand || '',
-              barcode: row['Barcode'] || row['barcode'] || row.barcode || '',
-              sku: row['SKU'] || row['Sku'] || row['sku'] || row.sku || '',
-              supplier: row['Supplier'] || row['supplier'] || row.supplier || '',
-              cost: row['Cost Price'] || row['Cost'] || row['cost'] || row.cost,
-              retail: row['Retail Price'] || row['Retail'] || row['retail'] || row.retail,
-              wholesale: row['Wholesale Price'] || row['Wholesale'] || row['wholesale'] || row.wholesale,
-              currentStock: row['Current Stock'] || row['Stock'] || row['currentStock'] || row.stock,
-              reorderPoint: row['Reorder Point'] || row['Reorder'] || row['reorderPoint'] || row.reorder,
-              status: row['Status'] || row['status'] || 'active'
-            };
-            
-            // Validate required fields
-            if (!mapped.name) {
-              results.errors.push({
-                row: i + 2, // +2 because CSV has header and 0-based index
-                error: 'Missing required field: Product Name is required'
-              });
-              continue;
-            }
-            
-            // Check if product already exists
-            const existingProduct = await productService.getProductByName(mapped.name.toString().trim());
-            
-            // Validate and parse pricing
-            const cost = parseFloat(mapped.cost);
-            const retail = parseFloat(mapped.retail);
-            const wholesale = parseFloat(mapped.wholesale);
 
-            if (existingProduct) {
-              // Update existing product instead of skipping
-              const updateData = {
-                description: mapped.description?.toString().trim() || existingProduct.description,
-                category: mapped.category?.toString().trim() || (existingProduct.category?.name || existingProduct.category),
-                brand: mapped.brand?.toString().trim() || existingProduct.brand,
-                barcode: mapped.barcode?.toString().trim() || existingProduct.barcode,
-                sku: mapped.sku?.toString().trim() || existingProduct.sku,
-                pricing: {
-                  cost: isNaN(cost) ? existingProduct.pricing?.cost || 0 : cost,
-                  retail: isNaN(retail) ? existingProduct.pricing?.retail || 0 : retail,
-                  wholesale: isNaN(wholesale) ? existingProduct.pricing?.wholesale || 0 : wholesale
-                },
-                inventory: {
-                  currentStock: parseInt(mapped.currentStock) || existingProduct.inventory?.currentStock || 0,
-                  reorderPoint: parseInt(mapped.reorderPoint) || existingProduct.inventory?.reorderPoint || 0
-                },
-                status: mapped.status?.toString().toLowerCase() === 'inactive' ? 'inactive' : 'active'
-              };
 
-              await productService.updateProduct(existingProduct._id, updateData, req.user?.id || req.user?._id);
-              results.success++;
-              continue;
-            }
-            
-            if (isNaN(cost) || cost < 0) {
-              results.errors.push({
-                row: i + 2,
-                error: 'Invalid cost price. Must be a non-negative number.'
-              });
-              continue;
-            }
-            if (isNaN(retail) || retail < 0) {
-              results.errors.push({
-                row: i + 2,
-                error: 'Invalid retail price. Must be a non-negative number.'
-              });
-              continue;
-            }
-            if (isNaN(wholesale) || wholesale < 0) {
-              results.errors.push({
-                row: i + 2,
-                error: 'Invalid wholesale price. Must be a non-negative number.'
-              });
-              continue;
-            }
-            
-            // Validate price hierarchy: cost <= wholesale <= retail
-            if (cost > wholesale) {
-              results.errors.push({
-                row: i + 2,
-                error: 'Cost price cannot be greater than wholesale price.'
-              });
-              continue;
-            }
-            if (wholesale > retail) {
-              results.errors.push({
-                row: i + 2,
-                error: 'Wholesale price cannot be greater than retail price.'
-              });
-              continue;
-            }
-            
-            // Create product using service
-            const productData = {
-              name: mapped.name.toString().trim(),
-              description: mapped.description?.toString().trim() || '',
-              category: mapped.category?.toString().trim() || 'Uncategorized',
-              brand: mapped.brand?.toString().trim() || '',
-              barcode: mapped.barcode?.toString().trim() || '',
-              sku: mapped.sku?.toString().trim() || '',
-              supplier: mapped.supplier?.toString().trim() || '',
-              pricing: {
-                cost: cost,
-                retail: retail,
-                wholesale: wholesale
-              },
-              inventory: {
-                currentStock: parseInt(mapped.currentStock) || 0,
-                reorderPoint: parseInt(mapped.reorderPoint) || 0
-              },
-              status: mapped.status?.toString().toLowerCase() === 'inactive' ? 'inactive' : 'active'
-            };
-            
-            await productService.createProduct(productData, req.user?.id || req.user?._id);
-            results.success++;
-            
-          } catch (error) {
-            results.errors.push({
-              row: i + 2,
-              error: error.message
-            });
-          }
-        }
-        
-        // Clean up uploaded file
-        fs.unlinkSync(req.file.path);
-        
-        res.json({
-          message: 'Import completed',
-          results: results
-        });
-      })
-      .on('error', (error) => {
-        console.error('CSV parsing error:', error);
-        res.status(500).json({ message: 'Failed to parse CSV file' });
-      });
-      
-  } catch (error) {
-    console.error('Import error:', error);
-    res.status(500).json({ message: 'Import failed' });
-  }
-});
 
-// @route   POST /api/products/import/excel
-// @desc    Import products from Excel
-// @access  Private
-router.post('/import/excel', [
-  auth,
-  requirePermission('create_products'),
-  upload.single('file')
-], async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ message: 'No file uploaded' });
-    }
-    
-    const results = {
-      total: 0,
-      success: 0,
-      errors: []
-    };
-    
-    // Read Excel file
-    const workbook = XLSX.readFile(req.file.path);
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-    const products = XLSX.utils.sheet_to_json(worksheet);
-    
-    results.total = products.length;
-    
-    for (let i = 0; i < products.length; i++) {
-      try {
-        const row = products[i];
-        
-        // Map Excel columns to our format (handle different column names)
-        const productData = {
-          name: row['Product Name'] || row['Name'] || row['Product'] || row.name,
-          description: row['Description'] || row['description'] || row.description || '',
-          category: row['Category'] || row['category'] || row.category || 'Uncategorized',
-          brand: row['Brand'] || row['brand'] || row.brand || '',
-          barcode: row['Barcode'] || row['barcode'] || row.barcode || '',
-          sku: row['SKU'] || row['Sku'] || row['sku'] || row.sku || '',
-          supplier: row['Supplier'] || row['supplier'] || row.supplier || '',
-          cost: row['Cost Price'] || row['Cost'] || row['cost'] || row.cost || 0,
-          retail: row['Retail Price'] || row['Retail'] || row['retail'] || row.retail || 0,
-          wholesale: row['Wholesale Price'] || row['Wholesale'] || row['wholesale'] || row.wholesale || 0,
-          currentStock: row['Current Stock'] || row['Stock'] || row['currentStock'] || row.stock || 0,
-          reorderPoint: row['Reorder Point'] || row['Reorder'] || row['reorderPoint'] || row.reorder || 0,
-          status: row['Status'] || row['status'] || 'active'
-        };
-        
-        // Validate required fields
-        if (!productData.name) {
-          results.errors.push({
-            row: i + 2,
-            error: 'Missing required field: Product Name is required'
-          });
-          continue;
-        }
-        
-        // Check if product already exists
-        const existingProduct = await productService.getProductByName(productData.name.toString().trim());
-        
-        // Validate and parse pricing
-        const cost = parseFloat(productData.cost);
-        const retail = parseFloat(productData.retail);
-        const wholesale = parseFloat(productData.wholesale);
 
-        if (existingProduct) {
-          // Update existing product instead of skipping
-          const updatePayload = {
-            description: productData.description?.toString().trim() || existingProduct.description,
-            category: productData.category?.toString().trim() || (existingProduct.category?.name || existingProduct.category),
-            brand: productData.brand?.toString().trim() || existingProduct.brand,
-            barcode: productData.barcode?.toString().trim() || existingProduct.barcode,
-            sku: productData.sku?.toString().trim() || existingProduct.sku,
-            pricing: {
-              cost: isNaN(cost) ? existingProduct.pricing?.cost || 0 : cost,
-              retail: isNaN(retail) ? existingProduct.pricing?.retail || 0 : retail,
-              wholesale: isNaN(wholesale) ? existingProduct.pricing?.wholesale || 0 : wholesale
-            },
-            inventory: {
-              currentStock: parseInt(productData.currentStock) || existingProduct.inventory?.currentStock || 0,
-              reorderPoint: parseInt(productData.reorderPoint) || existingProduct.inventory?.reorderPoint || 0
-            },
-            status: productData.status?.toString().toLowerCase() === 'inactive' ? 'inactive' : 'active'
-          };
-
-          await productService.updateProduct(existingProduct._id, updatePayload, req.user?.id || req.user?._id);
-          results.success++;
-          continue;
-        }
-        
-        if (isNaN(cost) || cost < 0) {
-          results.errors.push({
-            row: i + 2,
-            error: 'Invalid cost price. Must be a non-negative number.'
-          });
-          continue;
-        }
-        if (isNaN(retail) || retail < 0) {
-          results.errors.push({
-            row: i + 2,
-            error: 'Invalid retail price. Must be a non-negative number.'
-          });
-          continue;
-        }
-        if (isNaN(wholesale) || wholesale < 0) {
-          results.errors.push({
-            row: i + 2,
-            error: 'Invalid wholesale price. Must be a non-negative number.'
-          });
-          continue;
-        }
-        
-        // Validate price hierarchy: cost <= wholesale <= retail
-        if (cost > wholesale) {
-          results.errors.push({
-            row: i + 2,
-            error: 'Cost price cannot be greater than wholesale price.'
-          });
-          continue;
-        }
-        if (wholesale > retail) {
-          results.errors.push({
-            row: i + 2,
-            error: 'Wholesale price cannot be greater than retail price.'
-          });
-          continue;
-        }
-        
-        // Create product using service
-        const productPayload = {
-          name: productData.name.toString().trim(),
-          description: productData.description?.toString().trim() || '',
-          category: productData.category?.toString().trim() || 'Uncategorized',
-          brand: productData.brand?.toString().trim() || '',
-          barcode: productData.barcode?.toString().trim() || '',
-          sku: productData.sku?.toString().trim() || '',
-          supplier: productData.supplier?.toString().trim() || '',
-          pricing: {
-            cost: cost,
-            retail: retail,
-            wholesale: wholesale
-          },
-          inventory: {
-            currentStock: parseInt(productData.currentStock) || 0,
-            reorderPoint: parseInt(productData.reorderPoint) || 0
-          },
-          status: productData.status?.toString().toLowerCase() === 'inactive' ? 'inactive' : 'active'
-        };
-        
-        await productService.createProduct(productPayload, req.user?.id || req.user?._id);
-        results.success++;
-        
-      } catch (error) {
-        results.errors.push({
-          row: i + 2,
-          error: error.message
-        });
-      }
-    }
-    
-    // Clean up uploaded file
-    fs.unlinkSync(req.file.path);
-    
-    res.json({
-      message: 'Import completed',
-      results: results
-    });
-    
-  } catch (error) {
-    console.error('Excel import error:', error);
-    res.status(500).json({ message: 'Import failed' });
-  }
-});
-
-// @route   GET /api/products/template/csv
-// @desc    Download CSV template
-// @access  Private
-router.get('/template/csv', [auth, requirePermission('create_products')], async (req, res) => {
-  try {
-    const templateData = [
-      {
-        name: 'Sample Product',
-        description: 'This is a sample product',
-        category: 'Electronics',
-        brand: 'Sample Brand',
-        barcode: '1234567890123',
-        sku: 'SKU-001',
-        cost: '10.00',
-        retail: '15.00',
-        wholesale: '12.00',
-        distributor: '11.00',
-        currentStock: '100',
-        minStock: '5',
-        maxStock: '200',
-        reorderPoint: '10',
-        weight: '1.5',
-        status: 'active',
-        taxable: 'true',
-        taxRate: '0.08'
-      }
-    ];
-    
-    const csvWriter = createCsvWriter({
-      path: 'exports/product_template.csv',
-      header: [
-        { id: 'name', title: 'Product Name' },
-        { id: 'description', title: 'Description' },
-        { id: 'category', title: 'Category' },
-        { id: 'brand', title: 'Brand' },
-        { id: 'barcode', title: 'Barcode' },
-        { id: 'sku', title: 'SKU' },
-        { id: 'cost', title: 'Cost Price' },
-        { id: 'retail', title: 'Retail Price' },
-        { id: 'wholesale', title: 'Wholesale Price' },
-        { id: 'distributor', title: 'Distributor Price' },
-        { id: 'currentStock', title: 'Current Stock' },
-        { id: 'minStock', title: 'Min Stock' },
-        { id: 'maxStock', title: 'Max Stock' },
-        { id: 'reorderPoint', title: 'Reorder Point' },
-        { id: 'weight', title: 'Weight' },
-        { id: 'status', title: 'Status' },
-        { id: 'taxable', title: 'Taxable' },
-        { id: 'taxRate', title: 'Tax Rate' }
-      ]
-    });
-    
-    // Ensure exports directory exists
-    if (!fs.existsSync('exports')) {
-      fs.mkdirSync('exports');
-    }
-    
-    await csvWriter.writeRecords(templateData);
-    res.download('exports/product_template.csv', 'product_template.csv');
-    
-  } catch (error) {
-    console.error('Template error:', error);
-    res.status(500).json({ message: 'Failed to generate template' });
-  }
-});
 
 // Link investors to product
 router.post('/:id/investors', [
   auth,
   requirePermission('edit_products'),
+  param('id').isUUID(4).withMessage('Invalid product ID'),
   body('investors').isArray().withMessage('Investors must be an array'),
   body('investors.*.investor').isUUID(4).withMessage('Invalid investor ID'),
-  body('investors.*.sharePercentage').optional().isFloat({ min: 0, max: 100 })
+  body('investors.*.sharePercentage').optional().isFloat({ min: 0, max: 100 }),
+  handleValidationErrors
 ], async (req, res) => {
   try {
     const product = await productService.updateProductInvestors(req.params.id, req.body.investors);
@@ -1381,6 +695,28 @@ router.post('/:id/calculate-cost', [
       message: 'Server error',
       error: error.message 
     });
+  }
+});
+
+// @route   POST /api/products/bulk-create
+// @desc    Bulk create products from import
+// @access  Private
+router.post('/bulk-create', [
+  auth,
+  requirePermission('create_products'),
+  body('products').isArray().withMessage('Products array is required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+    
+    const result = await productService.bulkCreateProducts(req.body.products, req.user?.id || req.user?._id, req);
+    res.status(201).json(result);
+  } catch (error) {
+    console.error('Bulk create products error:', error);
+    res.status(500).json({ message: 'Server error bulk creating products', error: error.message });
   }
 });
 

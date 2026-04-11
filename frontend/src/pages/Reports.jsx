@@ -1,26 +1,24 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { toast } from 'sonner';
 import {
-  BarChart3,
   TrendingUp,
   Users,
   Package,
-  Download,
-  Printer,
-  Building2,
-  Wallet,
-  ArrowUpRight,
-  ArrowDownRight,
-  Filter,
   RefreshCcw,
-  MapPin,
   DollarSign,
   ShoppingBag,
   CheckCircle,
-  AlertTriangle,
   XCircle,
-  Search
+  Search,
+  ChevronLeft,
+  ChevronRight,
+  FileSpreadsheet,
+  Printer,
+  Wallet,
+  Building2
 } from 'lucide-react';
+import ExcelExportButton from '../components/ExcelExportButton';
+import PdfExportButton from '../components/PdfExportButton';
 import {
   useGetSalesReportQuery,
   useGetProductReportQuery,
@@ -31,15 +29,17 @@ import {
   useGetFinancialReportQuery,
   useGetBankCashSummaryQuery,
 } from '../store/services/reportsApi';
-import { useGetCitiesQuery } from '../store/services/citiesApi';
+import { useGetBanksQuery } from '../store/services/banksApi';
 import { useGetCategoriesQuery } from '../store/services/categoriesApi';
 import DateFilter from '../components/DateFilter';
-import { getCurrentDatePakistan, getDateDaysAgo } from '../utils/dateUtils';
-import { SearchableDropdown } from '../components/SearchableDropdown';
 import PrintReportModal from '../components/PrintReportModal';
-import { Button } from '@/components/ui/button';
+import { getCurrentDatePakistan, getDateDaysAgo } from '../utils/dateUtils';
+
+import { useCompanyInfo } from '../hooks/useCompanyInfo';
 
 export const Reports = () => {
+  const { companyInfo: companySettings } = useCompanyInfo();
+  const showCostPrice = companySettings.orderSettings?.showCostPrice !== false;
   const [activeTab, setActiveTab] = useState('party-balance');
   const [partyType, setPartyType] = useState('customer');
   const [salesGroupBy, setSalesGroupBy] = useState('daily');
@@ -47,124 +47,38 @@ export const Reports = () => {
   const [financialType, setFinancialType] = useState('trial-balance');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [inventoryProductSearch, setInventoryProductSearch] = useState('');
-  const [city, setCity] = useState('all');
+  const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+  /** Party Balances table: client-side paging */
+  const [partyBalancePage, setPartyBalancePage] = useState(1);
+  const [partyBalancePageSize, setPartyBalancePageSize] = useState(50);
+  const [partyPageSize, setPartyPageSize] = useState(50);
+  const PARTY_PAGE_SIZES = [50, 100, 200, 500];
+  /** Inventory table paging for Stock Summary / Current Stock / Stock Valuation */
+  const [stockSummaryPage, setStockSummaryPage] = useState(1);
+  const [stockSummaryPageSize, setStockSummaryPageSize] = useState(50);
+  const STOCK_SUMMARY_PAGE_SIZES = [50, 100, 200, 500, 2000, 5000];
+  const INVENTORY_PAGINATED_TYPES = ['stock-summary', 'summary', 'valuation'];
   const [dateRange, setDateRange] = useState({
     from: getDateDaysAgo(30),
     to: getCurrentDatePakistan()
   });
+  const [bankCashFilterMode, setBankCashFilterMode] = useState('month');
+  const [bankCashMonth, setBankCashMonth] = useState(getCurrentDatePakistan().slice(0, 7));
+  const [bankCashDateRange, setBankCashDateRange] = useState({
+    from: getDateDaysAgo(30),
+    to: getCurrentDatePakistan()
+  });
+  const [selectedBankIds, setSelectedBankIds] = useState([]);
 
-  // Print Modal State
-  const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
-
-  const formatDateStamp = () => new Date().toISOString().slice(0, 10);
-
-  const downloadCsv = (filename, headers, rows) => {
-    const escapeCell = (value) => {
-      const str = value === null || value === undefined ? '' : String(value);
-      return `"${str.replace(/"/g, '""')}"`;
-    };
-    const content = [
-      headers.map(escapeCell).join(','),
-      ...rows.map((row) => row.map(escapeCell).join(','))
-    ].join('\n');
-    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+  const handleRefresh = () => {
+    refetchSummary();
+    if (activeTab === 'party-balance') refetchParty();
+    if (activeTab === 'sales') refetchSales();
+    if (activeTab === 'inventory') refetchInventory();
+    if (activeTab === 'financial') refetchFinancial();
+    if (activeTab === 'bank-cash') refetchBankCash();
   };
 
-  const handleExport = () => {
-    if (activeTab !== 'inventory' || inventoryType !== 'stock-summary') {
-      toast.error('Export is currently enabled for Inventory Stock Summary only.');
-      return;
-    }
-    const rows = inventoryReportData?.data || [];
-    const summary = inventoryReportData?.summary || {};
-    if (!rows.length) {
-      toast.error('No stock summary data to export.');
-      return;
-    }
-    const headers = [
-      'S.NO',
-      'Product Name',
-      'Last Purchase Price',
-      'Opening Qty',
-      'Opening Amount',
-      'Purchase Qty',
-      'Purchase Amount',
-      'Purchase Return Qty',
-      'Purchase Return Amount',
-      'Sale Qty',
-      'Sale Amount',
-      'Sale Return Qty',
-      'Sale Return Amount',
-      'Damage Qty',
-      'Damage Amount',
-      'Closing Qty',
-      'Current Stock',
-      'Reconcile Delta',
-      'Closing Amount',
-      'Retail Valuation',
-      'Sale Price1'
-    ];
-    const bodyRows = rows.map((r, idx) => ([
-      idx + 1,
-      r.name || '',
-      r.lastPurchasePrice || 0,
-      r.openingQty || 0,
-      r.openingAmount || 0,
-      r.purchaseQty || 0,
-      r.purchaseAmount || 0,
-      r.purchaseReturnQty || 0,
-      r.purchaseReturnAmount || 0,
-      r.saleQty || 0,
-      r.saleAmount || 0,
-      r.saleReturnQty || 0,
-      r.saleReturnAmount || 0,
-      r.damageQty || 0,
-      r.damageAmount || 0,
-      r.closingQty || 0,
-      r.currentStock || 0,
-      r.reconciliationDelta || 0,
-      r.closingAmount || 0,
-      r.retailValuation || 0,
-      r.salePrice1 || 0
-    ]));
-    const totalRow = [
-      '',
-      'Grand Total',
-      '',
-      summary.openingQty || 0,
-      summary.openingAmount || 0,
-      summary.purchaseQty || 0,
-      summary.purchaseAmount || 0,
-      summary.purchaseReturnQty || 0,
-      summary.purchaseReturnAmount || 0,
-      summary.saleQty || 0,
-      summary.saleAmount || 0,
-      summary.saleReturnQty || 0,
-      summary.saleReturnAmount || 0,
-      summary.damageQty || 0,
-      summary.damageAmount || 0,
-      summary.closingQty || 0,
-      summary.totalCurrentStock || 0,
-      summary.totalReconciliationDelta || 0,
-      summary.closingAmount || 0,
-      summary.totalRetailValuation || 0,
-      ''
-    ];
-    downloadCsv(
-      `stock-summary-${dateRange.from || 'from'}-to-${dateRange.to || formatDateStamp()}.csv`,
-      headers,
-      [...bodyRows, totalRow]
-    );
-    toast.success('Stock summary CSV exported.');
-  };
 
   // Fetch Summary Cards
   const { 
@@ -173,8 +87,7 @@ export const Reports = () => {
     refetch: refetchSummary 
   } = useGetSummaryCardsQuery({
     dateFrom: dateRange.from,
-    dateTo: dateRange.to,
-    city: city === 'all' ? undefined : city
+    dateTo: dateRange.to
   });
 
   // Fetch Party Balance Report
@@ -183,11 +96,35 @@ export const Reports = () => {
     isLoading: partyLoading,
     refetch: refetchParty 
   } = useGetPartyBalanceReportQuery({
-    partyType,
-    city: city === 'all' ? undefined : city
+    partyType
   }, {
     skip: activeTab !== 'party-balance'
   });
+
+  const partyBalanceAllRows = useMemo(() => partyReportData?.data || [], [partyReportData?.data]);
+  const partyBalanceTotal = partyBalanceAllRows.length;
+  const partyBalanceTotalPages = Math.max(1, Math.ceil(partyBalanceTotal / partyPageSize) || 1);
+
+  useEffect(() => {
+    setPartyBalancePage(1);
+  }, [partyType]);
+
+  useEffect(() => {
+    setPartyBalancePage(1);
+  }, [partyPageSize]);
+
+  useEffect(() => {
+    setPartyBalancePage((p) => Math.min(p, partyBalanceTotalPages));
+  }, [partyBalanceTotalPages]);
+
+  const partyBalancePaginatedRows = useMemo(() => {
+    const page = Math.min(partyBalancePage, partyBalanceTotalPages);
+    const start = (page - 1) * partyPageSize;
+    return partyBalanceAllRows.slice(start, start + partyPageSize);
+  }, [partyBalanceAllRows, partyBalancePage, partyBalanceTotalPages, partyPageSize]);
+
+  const partyRangeStart = partyBalanceTotal === 0 ? 0 : (Math.min(partyBalancePage, partyBalanceTotalPages) - 1) * partyPageSize + 1;
+  const partyRangeEnd = partyBalanceTotal === 0 ? 0 : Math.min(partyRangeStart + partyBalancePaginatedRows.length - 1, partyBalanceTotal);
 
   // Fetch Sales Report
   const {
@@ -197,7 +134,6 @@ export const Reports = () => {
   } = useGetSalesReportQuery({
     dateFrom: dateRange.from,
     dateTo: dateRange.to,
-    city: city === 'all' ? undefined : city,
     groupBy: salesGroupBy
   }, {
     skip: activeTab !== 'sales'
@@ -230,41 +166,91 @@ export const Reports = () => {
   });
 
   // Fetch Bank & Cash Summary
+  const bankCashDateParams = useMemo(() => {
+    if (bankCashFilterMode === 'month' && bankCashMonth) {
+      return { month: bankCashMonth };
+    }
+    return {
+      dateFrom: bankCashDateRange.from,
+      dateTo: bankCashDateRange.to
+    };
+  }, [bankCashFilterMode, bankCashMonth, bankCashDateRange.from, bankCashDateRange.to]);
+
   const {
     data: bankCashSummaryData,
     isLoading: bankCashLoading,
     refetch: refetchBankCash
   } = useGetBankCashSummaryQuery({
-    dateFrom: dateRange.from,
-    dateTo: dateRange.to
+    ...bankCashDateParams,
+    ...(selectedBankIds.length ? { bankIds: selectedBankIds.join(',') } : {})
   }, {
     skip: activeTab !== 'bank-cash'
   });
 
-  // Fetch Cities for Filter
-  const { data: citiesData } = useGetCitiesQuery();
-  const cities = citiesData?.cities || [];
+  const { data: banksData } = useGetBanksQuery({ limit: 999999 }, { skip: activeTab !== 'bank-cash' });
+  const availableBanks = banksData?.data?.banks || banksData?.banks || [];
+
+  const isInventoryPaginated = INVENTORY_PAGINATED_TYPES.includes(inventoryType);
+
+  const stockSummaryAllRows = useMemo(() => {
+    if (activeTab !== 'inventory' || !isInventoryPaginated) return [];
+    return inventoryReportData?.data || [];
+  }, [activeTab, isInventoryPaginated, inventoryReportData?.data]);
+
+  const stockSummaryTotal = stockSummaryAllRows.length;
+  const stockSummaryTotalPages = Math.max(1, Math.ceil(stockSummaryTotal / stockSummaryPageSize) || 1);
+
+  useEffect(() => {
+    setStockSummaryPage(1);
+  }, [inventoryType, dateRange.from, dateRange.to, inventoryProductSearch]);
+
+  useEffect(() => {
+    setStockSummaryPage(1);
+  }, [stockSummaryPageSize]);
+
+  useEffect(() => {
+    setStockSummaryPage((p) => Math.min(p, stockSummaryTotalPages));
+  }, [stockSummaryTotalPages]);
+
+  const stockSummaryPaginatedRows = useMemo(() => {
+    if (!isInventoryPaginated) return [];
+    const page = Math.min(stockSummaryPage, stockSummaryTotalPages);
+    const start = (page - 1) * stockSummaryPageSize;
+    return stockSummaryAllRows.slice(start, start + stockSummaryPageSize);
+  }, [
+    stockSummaryAllRows,
+    stockSummaryPage,
+    stockSummaryTotalPages,
+    stockSummaryPageSize,
+    isInventoryPaginated
+  ]);
+
+  const stockRangeStart =
+    stockSummaryTotal === 0 ? 0 : (Math.min(stockSummaryPage, stockSummaryTotalPages) - 1) * stockSummaryPageSize + 1;
+  const stockRangeEnd =
+    stockSummaryTotal === 0
+      ? 0
+      : Math.min(stockRangeStart + stockSummaryPaginatedRows.length - 1, stockSummaryTotal);
 
   // Fetch Categories for Filter
   const { data: categoriesData } = useGetCategoriesQuery({ limit: 999999 });
   const categories = categoriesData?.categories || [];
 
-  const handleRefresh = () => {
-    refetchSummary();
-    if (activeTab === 'party-balance') refetchParty();
-    if (activeTab === 'sales') refetchSales();
-    if (activeTab === 'inventory') refetchInventory();
-    if (activeTab === 'financial') refetchFinancial();
-    if (activeTab === 'bank-cash') refetchBankCash();
-  };
+
 
   const summary = summaryData || {};
+  const handleToggleBank = (bankId) => {
+    setSelectedBankIds((prev) =>
+      prev.includes(bankId) ? prev.filter((id) => id !== bankId) : [...prev, bankId]
+    );
+  };
 
   // Define columns for different reports
   const getColumns = () => {
     switch (activeTab) {
       case 'party-balance':
         return [
+          { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
           { 
             header: 'Party Name', 
             render: (row) => (
@@ -276,14 +262,33 @@ export const Reports = () => {
               </div>
             )
           },
-          { header: 'Country', key: 'city' },
-          { header: 'Total Debit', render: (row) => (row.totalDebit || 0).toLocaleString(), align: 'right' },
-          { header: 'Total Credit', render: (row) => (row.totalCredit || 0).toLocaleString(), align: 'right' },
-          { header: 'Net Balance', render: (row) => (row.balance || 0).toLocaleString(), align: 'right', bold: true },
+          { header: 'City', key: 'city' },
+          {
+            header: 'Opening Bal.',
+            render: (row) => (row.openingBalance ?? 0).toLocaleString(),
+            align: 'right',
+          },
+          {
+            header: 'Ledger Dr',
+            render: (row) => (row.totalDebit || 0).toLocaleString(),
+            align: 'right',
+          },
+          {
+            header: 'Ledger Cr',
+            render: (row) => (row.totalCredit || 0).toLocaleString(),
+            align: 'right',
+          },
+          {
+            header: 'Net Balance',
+            render: (row) => (row.balance || 0).toLocaleString(),
+            align: 'right',
+            bold: true,
+          },
         ];
       case 'sales':
         if (salesGroupBy === 'daily') {
           return [
+            { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
             { header: 'Date', render: (row) => new Date(row.date).toLocaleDateString() },
             { header: 'Orders', key: 'totalOrders', align: 'right' },
             { header: 'Subtotal', render: (row) => (row.subtotal || 0).toLocaleString(), align: 'right' },
@@ -293,6 +298,7 @@ export const Reports = () => {
         }
         if (salesGroupBy === 'monthly') {
           return [
+            { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
             { header: 'Month', key: 'month' },
             { header: 'Orders', key: 'totalOrders', align: 'right' },
             { header: 'Revenue', render: (row) => (row.total || 0).toLocaleString(), align: 'right', bold: true },
@@ -300,6 +306,7 @@ export const Reports = () => {
         }
         if (salesGroupBy === 'product') {
           return [
+            { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
             { header: 'Product', key: 'productName' },
             { header: 'SKU', key: 'sku' },
             { header: 'Qty Sold', render: (row) => (row.totalQuantity || 0).toLocaleString(), align: 'right' },
@@ -308,6 +315,7 @@ export const Reports = () => {
         }
         if (salesGroupBy === 'category') {
           return [
+            { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
             { header: 'Category', key: 'categoryName' },
             { header: 'Items Sold', render: (row) => (row.itemCount || 0).toLocaleString(), align: 'right' },
             { header: 'Revenue', render: (row) => (row.totalRevenue || 0).toLocaleString(), align: 'right', bold: true },
@@ -315,13 +323,15 @@ export const Reports = () => {
         }
         if (salesGroupBy === 'city') {
           return [
-            { header: 'Country', key: 'city' },
+            { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
+            { header: 'City', key: 'city' },
             { header: 'Orders', key: 'totalOrders', align: 'right' },
             { header: 'Revenue', render: (row) => (row.totalRevenue || 0).toLocaleString(), align: 'right', bold: true },
           ];
         }
         if (salesGroupBy === 'invoice') {
           return [
+            { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
             { header: 'Invoice #', key: 'invoiceNo' },
             { header: 'Date', render: (row) => new Date(row.date).toLocaleDateString() },
             { header: 'Customer', render: (row) => row.customerName || row.name || 'N/A' },
@@ -335,19 +345,22 @@ export const Reports = () => {
           return [
             { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
             { header: 'Product Name', key: 'name' },
-            { header: 'Last Purchase Price', render: (row) => (row.lastPurchasePrice || 0).toLocaleString(), align: 'right' },
+            ...(showCostPrice ? [
+              { header: 'Last Purchase Price', render: (row) => (row.lastPurchasePrice || 0).toLocaleString(), align: 'right' },
+              { header: 'Op. Amount', render: (row) => (row.openingAmount || 0).toLocaleString(), align: 'right' },
+              { header: 'Purchase Amt', render: (row) => (row.purchaseAmount || 0).toLocaleString(), align: 'right' },
+              { header: 'Pur.Ret Amt', render: (row) => (row.purchaseReturnAmount || 0).toLocaleString(), align: 'right' },
+              { header: 'Sale Amt', render: (row) => (row.saleAmount || 0).toLocaleString(), align: 'right' },
+              { header: 'Sale Ret Amt', render: (row) => (row.saleReturnAmount || 0).toLocaleString(), align: 'right' },
+              { header: 'Damage Amt', render: (row) => (row.damageAmount || 0).toLocaleString(), align: 'right' },
+              { header: 'Closing Amt', render: (row) => (row.closingAmount || 0).toLocaleString(), align: 'right', bold: true },
+            ] : []),
             { header: 'Op. Qty', render: (row) => (row.openingQty || 0).toLocaleString(), align: 'right' },
-            { header: 'Op. Amount', render: (row) => (row.openingAmount || 0).toLocaleString(), align: 'right' },
             { header: 'Purchase Qty', render: (row) => (row.purchaseQty || 0).toLocaleString(), align: 'right' },
-            { header: 'Purchase Amt', render: (row) => (row.purchaseAmount || 0).toLocaleString(), align: 'right' },
             { header: 'Pur.Ret Qty', render: (row) => (row.purchaseReturnQty || 0).toLocaleString(), align: 'right' },
-            { header: 'Pur.Ret Amt', render: (row) => (row.purchaseReturnAmount || 0).toLocaleString(), align: 'right' },
             { header: 'Sale Qty', render: (row) => (row.saleQty || 0).toLocaleString(), align: 'right' },
-            { header: 'Sale Amt', render: (row) => (row.saleAmount || 0).toLocaleString(), align: 'right' },
             { header: 'Sale Ret Qty', render: (row) => (row.saleReturnQty || 0).toLocaleString(), align: 'right' },
-            { header: 'Sale Ret Amt', render: (row) => (row.saleReturnAmount || 0).toLocaleString(), align: 'right' },
             { header: 'Damage Qty', render: (row) => (row.damageQty || 0).toLocaleString(), align: 'right' },
-            { header: 'Damage Amt', render: (row) => (row.damageAmount || 0).toLocaleString(), align: 'right' },
             { header: 'Closing Qty', render: (row) => (row.closingQty || 0).toLocaleString(), align: 'right', bold: true },
             { header: 'Current Stock', render: (row) => (row.currentStock || 0).toLocaleString(), align: 'right', bold: true },
             {
@@ -360,12 +373,12 @@ export const Reports = () => {
               align: 'right',
               bold: true
             },
-            { header: 'Closing Amt', render: (row) => (row.closingAmount || 0).toLocaleString(), align: 'right', bold: true },
             { header: 'Retail Val.', render: (row) => (row.retailValuation || 0).toLocaleString(), align: 'right', bold: true },
             { header: 'Sale Price1', render: (row) => (row.salePrice1 || 0).toLocaleString(), align: 'right' },
           ];
         }
         const baseCols = [
+          { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
           { header: 'Product Name', key: 'name' },
           { header: 'SKU', key: 'sku' },
           { header: 'Category', key: 'categoryName' },
@@ -374,8 +387,10 @@ export const Reports = () => {
         if (inventoryType === 'valuation') {
           return [
             ...baseCols,
-            { header: 'Cost Price', render: (row) => (row.costPrice || 0).toLocaleString(), align: 'right' },
-            { header: 'Valuation', render: (row) => (row.valuation || 0).toLocaleString(), align: 'right', bold: true },
+            ...(showCostPrice ? [
+              { header: 'Cost Price', render: (row) => (row.costPrice || 0).toLocaleString(), align: 'right' },
+              { header: 'Valuation', render: (row) => (row.valuation || 0).toLocaleString(), align: 'right', bold: true },
+            ] : []),
             { header: 'Retail Val.', render: (row) => (row.retailValuation || 0).toLocaleString(), align: 'right', bold: true },
           ];
         }
@@ -395,6 +410,7 @@ export const Reports = () => {
       case 'financial':
         if (financialType === 'trial-balance') {
           return [
+            { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
             { header: 'Code', key: 'accountCode' },
             { header: 'Account Name', key: 'accountName' },
             { header: 'Debit Balance', render: (row) => row.debitBalance > 0 ? row.debitBalance.toLocaleString() : '-', align: 'right' },
@@ -403,6 +419,7 @@ export const Reports = () => {
         }
         if (financialType === 'pl-statement') {
           return [
+            { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
             { header: 'Category', key: 'category' },
             { header: 'Account', key: 'accountName' },
             { header: 'Type', key: 'accountType', render: (row) => <span className="capitalize">{row.accountType}</span> },
@@ -411,6 +428,7 @@ export const Reports = () => {
         }
         if (financialType === 'balance-sheet') {
           return [
+            { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
             { header: 'Type', key: 'accountType', render: (row) => <span className="capitalize font-bold">{row.accountType}</span> },
             { header: 'Category', key: 'category' },
             { header: 'Account', key: 'accountName' },
@@ -420,6 +438,7 @@ export const Reports = () => {
         return [];
       case 'bank-cash':
         return [
+          { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
           { header: 'Bank', render: (row) => row.bankName || 'N/A' },
           { header: 'Account', render: (row) => row.accountNumber || row.accountName || '-' },
           { header: 'Opening', render: (row) => (row.openingBalance || 0).toLocaleString(), align: 'right' },
@@ -483,17 +502,21 @@ export const Reports = () => {
     if (activeTab === 'inventory') {
       const base = {
         'Total Items': inventoryReportData?.summary?.totalItems || 0,
-        'Total Valuation': inventoryReportData?.summary?.totalValuation || 0,
+        'Total Cost': inventoryReportData?.summary?.totalCost || 0,
         'In Stock': inventoryReportData?.summary?.inStockCount || 0,
         'Out of Stock': inventoryReportData?.summary?.outOfStockCount || 0
       };
       if (inventoryType === 'stock-summary') {
-        return {
+        const valData = {
           ...base,
-          'Wholesale Valuation': inventoryReportData?.summary?.totalWholesaleValuation ?? 0,
           'Retail Valuation': inventoryReportData?.summary?.totalRetailValuation ?? 0,
           'Reconcile Delta': inventoryReportData?.summary?.totalReconciliationDelta ?? 0
         };
+        if (showCostPrice) {
+          valData['Wholesale Valuation'] = inventoryReportData?.summary?.totalWholesaleValuation ?? 0;
+          valData['Total Cost'] = inventoryReportData?.summary?.totalCost || 0;
+        }
+        return valData;
       }
       return {
         ...base,
@@ -537,13 +560,179 @@ export const Reports = () => {
     if (activeTab === 'party-balance') return 'Current Total';
     if (activeTab === 'sales') return 'In Selected Period';
     if (activeTab === 'inventory') {
-      if (title === 'Total Valuation') return 'Cost Price';
+      if (title === 'Total Cost') return 'Cost Price';
       if (title === 'Wholesale Valuation') return 'Wholesale Price';
       if (title === 'Retail Valuation') return 'Retail Price';
       return 'Current Status';
     }
     if (activeTab === 'bank-cash') return 'Current Total';
     return '';
+  };
+
+  const getExportData = () => {
+    const reportTitle = getReportTitle();
+    const data = getReportData();
+    let columns = [];
+
+    // Map UI columns to ExcelJS columns
+    switch (activeTab) {
+      case 'party-balance':
+        columns = [
+          { header: 'S.NO', key: 'sno', width: 8, type: 'number' },
+          { header: 'Party Name', key: 'businessName', width: 35 },
+          { header: 'City', key: 'city', width: 15 },
+          { header: 'Opening Bal.', key: 'openingBalance', width: 15, type: 'currency' },
+          { header: 'Ledger Dr', key: 'totalDebit', width: 15, type: 'currency' },
+          { header: 'Ledger Cr', key: 'totalCredit', width: 15, type: 'currency' },
+          { header: 'Net Balance', key: 'balance', width: 20, type: 'currency' }
+        ];
+        break;
+      case 'sales':
+        if (salesGroupBy === 'daily') {
+          columns = [
+            { header: 'S.NO', key: 'sno', width: 8, type: 'number' },
+            { header: 'Date', key: 'date', width: 15 },
+            { header: 'Orders', key: 'totalOrders', width: 10, type: 'number' },
+            { header: 'Subtotal', key: 'subtotal', width: 15, type: 'currency' },
+            { header: 'Discount', key: 'discount', width: 15, type: 'currency' },
+            { header: 'Net Total', key: 'total', width: 15, type: 'currency' }
+          ];
+        } else if (salesGroupBy === 'product') {
+          columns = [
+            { header: 'S.NO', key: 'sno', width: 8, type: 'number' },
+            { header: 'Image', key: 'imageUrl', width: 12, type: 'image' },
+            { header: 'Product', key: 'productName', width: 40 },
+            { header: 'SKU', key: 'sku', width: 15 },
+            { header: 'Qty Sold', key: 'totalQuantity', width: 12, type: 'number' },
+            { header: 'Revenue', key: 'totalRevenue', width: 15, type: 'currency' }
+          ];
+        } else {
+            columns = [
+                { header: 'S.NO', key: 'sno', width: 8, type: 'number' },
+                { header: 'Group', key: salesGroupBy === 'monthly' ? 'month' : salesGroupBy === 'category' ? 'categoryName' : 'name', width: 25 },
+                { header: 'Orders/Items', key: 'totalOrders', width: 15, type: 'number' },
+                { header: 'Revenue', key: 'totalRevenue', width: 20, type: 'currency' }
+            ];
+        }
+        break;
+      case 'inventory':
+        if (inventoryType === 'stock-summary') {
+          columns = [
+            { header: 'S.NO', key: 'sno', width: 8, type: 'number' },
+            { header: 'Image', key: 'imageUrl', width: 12, type: 'image' },
+            { header: 'Product Name', key: 'name', width: 40 },
+            { header: 'SKU', key: 'sku', width: 15 },
+            { header: 'Category', key: 'categoryName', width: 20 },
+            { header: 'Op. Qty', key: 'openingQty', width: 12, type: 'number' },
+            { header: 'Purchase Qty', key: 'purchaseQty', width: 12, type: 'number' },
+            { header: 'Sale Qty', key: 'saleQty', width: 12, type: 'number' },
+            { header: 'Sale Amt', key: 'saleAmount', width: 15, type: 'currency' },
+            { header: 'Current Stock', key: 'currentStock', width: 15, type: 'number' },
+            ...(showCostPrice ? [
+              { header: 'Op. Amount', key: 'openingAmount', width: 15, type: 'currency' },
+              { header: 'Purchase Amt', key: 'purchaseAmount', width: 15, type: 'currency' },
+              { header: 'Last Pur. Price', key: 'lastPurchasePrice', width: 15, type: 'currency' },
+              { header: 'Closing Amt', key: 'closingAmount', width: 15, type: 'currency' }
+            ] : [])
+          ];
+        } else {
+          columns = [
+            { header: 'S.NO', key: 'sno', width: 8, type: 'number' },
+            { header: 'Image', key: 'imageUrl', width: 12, type: 'image' },
+            { header: 'Product Name', key: 'name', width: 40 },
+            { header: 'SKU', key: 'sku', width: 15 },
+            { header: 'Category', key: 'categoryName', width: 20 },
+            { header: 'Stock', key: 'stockQuantity', width: 12, type: 'number' },
+            { header: 'Cost Price', key: 'costPrice', width: 15, type: 'currency' },
+            { header: 'Valuation', key: 'valuation', width: 15, type: 'currency' }
+          ];
+        }
+        break;
+      case 'financial':
+        if (financialType === 'trial-balance') {
+          columns = [
+            { header: 'S.NO', key: 'sno', width: 8, type: 'number' },
+            { header: 'Account Name', key: 'accountName', width: 35 },
+            { header: 'Category', key: 'category', width: 20 },
+            { header: 'Debit', key: 'debitBalance', width: 20, type: 'currency' },
+            { header: 'Credit', key: 'creditBalance', width: 20, type: 'currency' }
+          ];
+        } else {
+          columns = [
+            { header: 'S.NO', key: 'sno', width: 8, type: 'number' },
+            { header: 'Account Name', key: 'accountName', width: 35 },
+            { header: 'Category', key: 'category', width: 20 },
+            { header: 'Amount/Balance', key: 'amount', width: 20, type: 'currency' }
+          ];
+          if (financialType === 'balance-sheet') {
+            columns[3].key = 'balance';
+          }
+        }
+        break;
+       case 'bank-cash':
+         columns = [
+           { header: 'S.NO', key: 'sno', width: 8, type: 'number' },
+           { header: 'Bank Name', key: 'bankName', width: 30 },
+           { header: 'Account', key: 'accountNumber', width: 25 },
+           { header: 'Opening', key: 'openingBalance', width: 15, type: 'currency' },
+           { header: 'Receipts', key: 'totalReceipts', width: 15, type: 'currency' },
+           { header: 'Payments', key: 'totalPayments', width: 15, type: 'currency' },
+           { header: 'Balance', key: 'balance', width: 20, type: 'currency' }
+         ];
+         break;
+    }
+
+    return {
+      title: reportTitle,
+      filename: `${reportTitle.replace(/ /g, '_')}_${new Date().toLocaleDateString()}.xlsx`,
+      columns,
+      data: data.map((item, i) => ({
+          ...item,
+          sno: i + 1,
+          name: item.businessName || item.name || item.accountName || item.productName || item.bankName
+      })),
+      summary: (() => {
+          if (activeTab === 'inventory' && inventoryType === 'stock-summary') {
+              return {
+                  rows: [
+                      {
+                          label: 'GRAND TOTAL:',
+                          name: `${data.length} Items`,
+                          openingQty: inventoryReportData?.summary?.totalOpeningQty || 0,
+                          openingAmount: inventoryReportData?.summary?.totalOpeningAmount || 0,
+                          purchaseQty: inventoryReportData?.summary?.totalPurchaseQty || 0,
+                          purchaseAmount: inventoryReportData?.summary?.totalPurchaseAmount || 0,
+                          purchaseReturnQty: inventoryReportData?.summary?.totalPurchaseReturnQty || 0,
+                          purchaseReturnAmount: inventoryReportData?.summary?.totalPurchaseReturnAmount || 0,
+                          saleQty: inventoryReportData?.summary?.totalSaleQty || 0,
+                          saleAmount: inventoryReportData?.summary?.totalSaleAmount || 0,
+                          saleReturnQty: inventoryReportData?.summary?.totalSaleReturnQty || 0,
+                          saleReturnAmount: inventoryReportData?.summary?.totalSaleReturnAmount || 0,
+                          damageQty: inventoryReportData?.summary?.totalDamageQty || 0,
+                          damageAmount: inventoryReportData?.summary?.totalDamageAmount || 0,
+                          closingQty: inventoryReportData?.summary?.totalClosingQty || 0,
+                          closingAmount: inventoryReportData?.summary?.totalCost || 0,
+                          currentStock: inventoryReportData?.summary?.totalCurrentStock || 0
+                      }
+                  ]
+              };
+          }
+          if (activeTab === 'party-balance') {
+              return {
+                  rows: [
+                      {
+                          label: 'GRAND TOTAL:',
+                          openingBalance: partyReportData?.summary?.totalOpeningBalance || 0,
+                          totalDebit: partyReportData?.summary?.totalDebit || 0,
+                          totalCredit: partyReportData?.summary?.totalCredit || 0,
+                          balance: (partyType === 'customer' ? partyReportData?.totalCustomerBalance : partyReportData?.totalSupplierBalance) || 0
+                      }
+                  ]
+              };
+          }
+          return null;
+      })()
+    };
   };
 
   return (
@@ -556,27 +745,7 @@ export const Reports = () => {
         </div>
         
         <div className="flex flex-wrap items-center gap-3">
-          {activeTab !== 'inventory' && (
-            <div className="w-48">
-              <SearchableDropdown
-                items={[
-                  { id: 'all', name: 'All Countries' },
-                  ...(Array.isArray(cities) ? cities.map((c) => ({ ...c, id: c.id || c._id })) : [])
-                ]}
-                valueKey="id"
-                displayKey="name"
-                value={
-                  city === 'all'
-                    ? 'All Countries'
-                    : (cities || []).find((c) => (c.id || c._id) === city)?.name || city
-                }
-                onSelect={(item) => setCity(item?.id ?? item?._id ?? 'all')}
-                placeholder="Filter by Country"
-              />
-            </div>
-          )}
-          
-          {(activeTab !== 'inventory' || inventoryType === 'stock-summary') && (
+          {(activeTab !== 'bank-cash') && (activeTab !== 'inventory' || inventoryType === 'stock-summary') && (
             <DateFilter
               startDate={dateRange.from}
               endDate={dateRange.to}
@@ -596,20 +765,23 @@ export const Reports = () => {
             <RefreshCcw className={`h-5 w-5 ${(summaryLoading || partyLoading || salesLoading || inventoryLoading || financialLoading || bankCashLoading) ? 'animate-spin' : ''}`} />
           </button>
           
-          <Button
+          <ExcelExportButton 
+            getData={getExportData} 
+            label="Export Report"
+            className="border-indigo-200 bg-white text-indigo-700 hover:border-indigo-500 hover:bg-indigo-50 transition-all font-semibold"
+          />
+          <PdfExportButton 
+            getData={getExportData} 
+            label="PDF Report"
+            className="border-indigo-200 bg-white text-indigo-700 hover:border-indigo-500 hover:bg-indigo-50 transition-all font-semibold"
+          />
+          <button
             onClick={() => setIsPrintModalOpen(true)}
-            variant="secondary"
-            className="flex items-center gap-2"
-            title="Open PDF/Print preview"
+            className="flex items-center gap-2 px-4 py-2 border border-blue-200 bg-white text-blue-700 hover:border-blue-500 hover:bg-blue-50 transition-all font-semibold rounded-lg text-sm h-9"
           >
             <Printer className="h-4 w-4" />
-            <span className="hidden sm:inline">PDF</span>
-          </Button>
-
-          <Button onClick={handleExport} variant="default" className="flex items-center gap-2">
-            <Download className="h-4 w-4" />
-            <span className="hidden sm:inline">Export</span>
-          </Button>
+            Print Report
+          </button>
         </div>
       </div>
 
@@ -702,10 +874,20 @@ export const Reports = () => {
                     Suppliers
                   </button>
                 </div>
-                <div className="text-sm text-gray-500">
-                  Showing {partyReportData?.data?.length || 0} {partyType}s
+                <div className="flex flex-wrap items-center gap-3 text-sm text-gray-600">
+                  <span>
+                    {partyBalanceTotal} {partyType === 'customer' ? 'customers' : 'suppliers'} total
+                  </span>
+                  <span className="text-gray-400">·</span>
+                  <span>
+                    Rows {partyRangeStart}–{partyRangeEnd} of {partyBalanceTotal}
+                  </span>
                 </div>
               </div>
+              <p className="text-xs text-gray-500">
+                Net balance = opening balance + ledger activity on AR (1100) or AP (2000). Ledger Dr/Cr exclude
+                opening-balance postings so they match the general ledger.
+              </p>
 
               <div className="overflow-x-auto border border-gray-100 rounded-lg">
                 <table className="min-w-full divide-y divide-gray-200">
@@ -725,12 +907,12 @@ export const Reports = () => {
                           <div className="flex justify-center"><RefreshCcw className="h-6 w-6 animate-spin text-gray-400" /></div>
                         </td>
                       </tr>
-                    ) : partyReportData?.data?.length === 0 ? (
+                    ) : partyBalanceTotal === 0 ? (
                       <tr>
                         <td colSpan={getColumns().length} className="px-6 py-10 text-center text-gray-500">No data found for the selected filters</td>
                       </tr>
                     ) : (
-                      partyReportData?.data?.map((row, idx) => (
+                      partyBalancePaginatedRows.map((row, idx) => (
                         <tr key={row.id || idx} className="hover:bg-gray-50 transition-colors">
                           {getColumns().map((col, colIdx) => (
                             <td key={colIdx} className={`px-6 py-4 whitespace-nowrap text-sm ${col.align === 'right' ? 'text-right' : 'text-left'} ${col.bold ? 'font-bold' : ''}`}>
@@ -743,6 +925,51 @@ export const Reports = () => {
                   </tbody>
                 </table>
               </div>
+
+              {partyBalanceTotal > 0 && (
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-2 border-t border-gray-100">
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="party-page-size" className="text-sm text-gray-600 whitespace-nowrap">
+                      Rows per page
+                    </label>
+                    <select
+                      id="party-page-size"
+                      value={partyPageSize}
+                      onChange={(e) => setPartyPageSize(Number(e.target.value))}
+                      className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                    >
+                      {PARTY_PAGE_SIZES.map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2 justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setPartyBalancePage((p) => Math.max(1, p - 1))}
+                      disabled={partyBalancePage <= 1}
+                      className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                      Previous
+                    </button>
+                    <span className="text-sm text-gray-600 tabular-nums px-2">
+                      Page {Math.min(partyBalancePage, partyBalanceTotalPages)} of {partyBalanceTotalPages}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setPartyBalancePage((p) => Math.min(partyBalanceTotalPages, p + 1))}
+                      disabled={partyBalancePage >= partyBalanceTotalPages}
+                      className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Next
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -755,7 +982,7 @@ export const Reports = () => {
                     { id: 'monthly', label: 'Monthly' },
                     { id: 'product', label: 'Product-wise' },
                     { id: 'category', label: 'Category-wise' },
-                    { id: 'city', label: 'Country-wise' },
+                    { id: 'city', label: 'City-wise' },
                     { id: 'invoice', label: 'Invoices' }
                   ].map((group) => (
                     <button
@@ -855,7 +1082,16 @@ export const Reports = () => {
                     />
                   </div>
                   <div className="text-sm text-gray-500">
-                    {inventoryReportData?.data?.length || 0} Items Found
+                    {isInventoryPaginated ? (
+                      <span>
+                        {stockSummaryTotal} items
+                        {stockSummaryTotal > 0 ? (
+                          <span className="text-gray-400"> · Rows {stockRangeStart}–{stockRangeEnd} of {stockSummaryTotal}</span>
+                        ) : null}
+                      </span>
+                    ) : (
+                      <span>{inventoryReportData?.data?.length || 0} Items Found</span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -878,25 +1114,33 @@ export const Reports = () => {
                           <div className="flex justify-center"><RefreshCcw className="h-6 w-6 animate-spin text-gray-400" /></div>
                         </td>
                       </tr>
-                    ) : inventoryReportData?.data?.length === 0 ? (
+                    ) : (isInventoryPaginated
+                      ? stockSummaryTotal === 0
+                      : (inventoryReportData?.data?.length || 0) === 0) ? (
                       <tr>
                         <td colSpan={getColumns().length} className="px-6 py-10 text-center text-gray-500">No inventory data found</td>
                       </tr>
                     ) : (
                       <>
-                        {inventoryReportData?.data?.map((row, idx) => (
+                        {(isInventoryPaginated ? stockSummaryPaginatedRows : inventoryReportData?.data || []).map((row, idx) => (
                           <tr key={row.id || idx} className="hover:bg-gray-50 transition-colors">
                             {getColumns().map((col, colIdx) => (
                               <td key={colIdx} className={`px-6 py-4 whitespace-nowrap text-sm ${col.align === 'right' ? 'text-right' : 'text-left'} ${col.bold ? 'font-bold' : ''}`}>
-                                {col.render ? col.render(row, idx) : row[col.key]}
+                                {col.render
+                                  ? col.render(
+                                      row,
+                                      isInventoryPaginated
+                                        ? (stockSummaryPage - 1) * stockSummaryPageSize + idx
+                                        : idx
+                                    )
+                                  : row[col.key]}
                               </td>
                             ))}
                           </tr>
                         ))}
-                        {inventoryType === 'stock-summary' && inventoryReportData?.data?.length > 0 && inventoryReportData?.summary && (
+                        {inventoryType === 'stock-summary' && stockSummaryTotal > 0 && inventoryReportData?.summary && (
                           <tr className="bg-gray-50 font-bold border-t-2 border-gray-300">
-                            <td colSpan={2} className="px-6 py-3 text-sm text-gray-900">Grand Total</td>
-                            <td className="px-6 py-3 text-sm text-right">—</td>
+                            <td colSpan={3} className="px-6 py-3 text-sm text-gray-900">Grand Total</td>
                             <td className="px-6 py-3 text-sm text-right">{(inventoryReportData.summary.openingQty || 0).toLocaleString()}</td>
                             <td className="px-6 py-3 text-sm text-right">{(inventoryReportData.summary.openingAmount || 0).toLocaleString()}</td>
                             <td className="px-6 py-3 text-sm text-right">{(inventoryReportData.summary.purchaseQty || 0).toLocaleString()}</td>
@@ -923,7 +1167,6 @@ export const Reports = () => {
                             <td className="px-6 py-3 text-sm text-right">{(inventoryReportData.summary.closingAmount || 0).toLocaleString()}</td>
                             <td className="px-6 py-3 text-sm text-right">{(inventoryReportData.summary.totalRetailValuation || 0).toLocaleString()}</td>
                             <td className="px-6 py-3 text-sm text-right">—</td>
-                            <td className="px-6 py-3 text-sm text-right">—</td>
                           </tr>
                         )}
                       </>
@@ -931,6 +1174,51 @@ export const Reports = () => {
                   </tbody>
                 </table>
               </div>
+
+              {isInventoryPaginated && stockSummaryTotal > 0 && (
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-2 border-t border-gray-100">
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="stock-summary-page-size" className="text-sm text-gray-600 whitespace-nowrap">
+                      Rows per page
+                    </label>
+                    <select
+                      id="stock-summary-page-size"
+                      value={stockSummaryPageSize}
+                      onChange={(e) => setStockSummaryPageSize(Number(e.target.value))}
+                      className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                    >
+                      {STOCK_SUMMARY_PAGE_SIZES.map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2 justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setStockSummaryPage((p) => Math.max(1, p - 1))}
+                      disabled={stockSummaryPage <= 1}
+                      className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                      Previous
+                    </button>
+                    <span className="text-sm text-gray-600 tabular-nums px-2">
+                      Page {Math.min(stockSummaryPage, stockSummaryTotalPages)} of {stockSummaryTotalPages}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setStockSummaryPage((p) => Math.min(stockSummaryTotalPages, p + 1))}
+                      disabled={stockSummaryPage >= stockSummaryTotalPages}
+                      className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Next
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -981,17 +1269,62 @@ export const Reports = () => {
                       <tr>
                         <td colSpan={getColumns().length} className="px-6 py-10 text-center text-gray-500">No financial data found for the selected period</td>
                       </tr>
-                    ) : (
-                      financialReportData?.data?.map((row, idx) => (
-                        <tr key={idx} className="hover:bg-gray-50 transition-colors">
-                          {getColumns().map((col, colIdx) => (
-                            <td key={colIdx} className={`px-6 py-4 whitespace-nowrap text-sm ${col.align === 'right' ? 'text-right' : 'text-left'} ${col.bold ? 'font-bold' : ''}`}>
-                              {col.render ? col.render(row) : row[col.key]}
-                            </td>
+                      ) : (
+                        <>
+                          {financialReportData?.data?.map((row, idx) => (
+                            <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                              {getColumns().map((col, colIdx) => (
+                                <td key={colIdx} className={`px-6 py-4 whitespace-nowrap text-sm ${col.align === 'right' ? 'text-right' : 'text-left'} ${col.bold ? 'font-bold' : ''}`}>
+                                  {col.render ? col.render(row) : row[col.key]}
+                                </td>
+                              ))}
+                            </tr>
                           ))}
-                        </tr>
-                      ))
-                    )}
+                          {financialReportData?.summary && (
+                            <>
+                              {financialType === 'trial-balance' && (
+                                <tr className="bg-gray-900 border-t-2 border-gray-800">
+                                  <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-white uppercase">Grand Total</td>
+                                  <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-white text-right"></td>
+                                  <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-400 text-right">
+                                    {(financialReportData.summary.totalDebit || 0).toLocaleString()}
+                                  </td>
+                                  <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-400 text-right">
+                                    {(financialReportData.summary.totalCredit || 0).toLocaleString()}
+                                  </td>
+                                </tr>
+                              )}
+                              {financialType === 'pl-statement' && (
+                                <tr className="bg-gray-900 border-t-2 border-gray-800">
+                                  <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-white uppercase">Net Profit / Loss</td>
+                                  <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-white text-right"></td>
+                                  <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-400 text-right">
+                                    {(financialReportData.summary.netProfit || 0).toLocaleString()}
+                                  </td>
+                                </tr>
+                              )}
+                              {financialType === 'balance-sheet' && (
+                                <>
+                                  <tr className="bg-gray-900 border-t-2 border-gray-800">
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-white uppercase">Total Assets</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-white text-right"></td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-400 text-right">
+                                      {(financialReportData.summary.totalAssets || 0).toLocaleString()}
+                                    </td>
+                                  </tr>
+                                  <tr className="bg-gray-900 border-t border-gray-800">
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-white uppercase">Total Liabilities + Equity</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-white text-right"></td>
+                                    <td className="px-4 py-4 whitespace-nowrap text-sm font-bold text-green-400 text-right">
+                                      {((financialReportData.summary.totalLiabilities || 0) + (financialReportData.summary.totalEquity || 0)).toLocaleString()}
+                                    </td>
+                                  </tr>
+                                </>
+                              )}
+                            </>
+                          )}
+                        </>
+                      )}
                   </tbody>
                 </table>
               </div>
@@ -1001,8 +1334,85 @@ export const Reports = () => {
           {activeTab === 'bank-cash' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between flex-wrap gap-4">
+                <div className="flex items-center flex-wrap gap-3">
+                  <div className="flex bg-gray-100 p-1 rounded-lg">
+                    <button
+                      onClick={() => setBankCashFilterMode('month')}
+                      className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
+                        bankCashFilterMode === 'month' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                    >
+                      Month
+                    </button>
+                    <button
+                      onClick={() => setBankCashFilterMode('custom')}
+                      className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
+                        bankCashFilterMode === 'custom' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                    >
+                      Custom Range
+                    </button>
+                  </div>
+                  {bankCashFilterMode === 'month' ? (
+                    <input
+                      type="month"
+                      value={bankCashMonth}
+                      onChange={(e) => setBankCashMonth(e.target.value)}
+                      className="input h-9 text-sm"
+                    />
+                  ) : (
+                    <DateFilter
+                      startDate={bankCashDateRange.from}
+                      endDate={bankCashDateRange.to}
+                      onDateChange={(start, end) => setBankCashDateRange({ from: start || '', to: end || '' })}
+                      compact={true}
+                      showPresets={true}
+                    />
+                  )}
+                  <div className="min-w-[260px] rounded-md border border-gray-300 bg-white p-2">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-xs font-medium text-gray-600">Banks</span>
+                      <div className="flex items-center gap-2 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedBankIds(availableBanks.map((bank) => bank.id || bank._id).filter(Boolean))}
+                          className="text-blue-600 hover:text-blue-700"
+                        >
+                          Select all
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedBankIds([])}
+                          className="text-gray-500 hover:text-gray-700"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    <div className="max-h-24 overflow-y-auto space-y-1 pr-1">
+                      {availableBanks.map((bank) => {
+                        const bankId = bank.id || bank._id;
+                        if (!bankId) return null;
+                        return (
+                          <label key={bankId} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={selectedBankIds.includes(bankId)}
+                              onChange={() => handleToggleBank(bankId)}
+                              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            <span>
+                              {bank.bankName || bank.bank_name || 'Bank'} - {bank.accountNumber || bank.account_number || bank.accountName || bank.account_name || 'Account'}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
                 <div className="text-sm text-gray-500">
-                  {bankCashSummaryData?.banks?.length || 0} Banks Found
+                  {(bankCashSummaryData?.banks?.length || 0)} Banks Found
+                  {selectedBankIds.length > 0 ? ` · ${selectedBankIds.length} selected` : ' · All banks'}
                 </div>
               </div>
 
@@ -1057,6 +1467,24 @@ export const Reports = () => {
                 </div>
               </div>
 
+              <div className="rounded-lg border border-gray-100 bg-green-50 p-4">
+                <div className="text-sm text-gray-600">Receipts Report</div>
+                <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+                  <div>
+                    <div className="text-gray-500">Bank Receipts</div>
+                    <div className="font-semibold text-green-700">{(bankCashSummaryData?.receiptSummary?.totalBankReceipts || 0).toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-gray-500">Cash Receipts</div>
+                    <div className="font-semibold text-green-700">{(bankCashSummaryData?.receiptSummary?.totalCashReceipts || 0).toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-gray-500">Total Receipts</div>
+                    <div className="font-semibold text-green-800">{(bankCashSummaryData?.receiptSummary?.totalReceipts || 0).toLocaleString()}</div>
+                  </div>
+                </div>
+              </div>
+
               <div className="overflow-x-auto border border-gray-100 rounded-lg">
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
@@ -1107,8 +1535,7 @@ export const Reports = () => {
         columns={getColumns()}
         filters={{
           dateFrom: dateRange.from,
-          dateTo: dateRange.to,
-          city: cities.find(c => c.id === city)?.name || 'All Countries'
+          dateTo: dateRange.to
         }}
         summaryData={getSummaryData()}
       />

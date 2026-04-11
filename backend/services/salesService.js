@@ -12,6 +12,8 @@ const AccountingService = require('./accountingService');
 const profitDistributionService = require('./profitDistributionService');
 const discountService = require('./discountService');
 const paymentRepository = require('../repositories/postgres/PaymentRepository');
+const settingsService = require('./settingsService');
+const purchaseInvoiceRepository = require('../repositories/postgres/PurchaseInvoiceRepository');
 
 // Helper function to parse date string as local date (not UTC)
 const parseLocalDate = (dateString) => {
@@ -22,6 +24,33 @@ const parseLocalDate = (dateString) => {
   if (!year || !month || !day) return null;
   return new Date(year, month - 1, day, 0, 0, 0, 0);
 };
+
+/**
+ * Maps POS payment to DB payment_status. Investor profit only runs when status is `paid`.
+ *
+ * Do NOT trust `isPartialPayment` alone: the POS sets `amountPaid < total` whenever Amount Paid is 0,
+ * so full retail sales were stored as `partial` and skipped profit distribution entirely.
+ */
+function resolveInvoicePaymentStatus(payment, orderTotal) {
+  const amountPaid = parseFloat(payment?.amount ?? 0) || 0;
+  const total = Number(orderTotal) || 0;
+  const method = String(payment?.method || '').toLowerCase();
+  const eps = 0.01;
+
+  if (total <= eps) return 'paid';
+
+  // Settled by amount (any method)
+  if (amountPaid + eps >= total) return 'paid';
+
+  // Cash: Amount Paid is often left at 0; still a full sale
+  if (method === 'cash') return 'paid';
+
+  // Genuine partial: customer paid something but not the full invoice
+  if (amountPaid > 0 && amountPaid + eps < total) return 'partial';
+
+  // Unpaid: account / card / bank with amount 0 (until payment is recorded)
+  return 'pending';
+}
 
 // Helper to format customer address
 const formatCustomerAddress = (customerData) => {
@@ -44,8 +73,15 @@ class SalesService {
   transformCustomerToUppercase(customer) {
     if (!customer) return customer;
     if (customer.toObject) customer = customer.toObject();
+
+    // Postgres uses business_name, frontend uses businessName
+    if (customer.business_name && !customer.businessName) {
+      customer.businessName = customer.business_name;
+    }
+
     if (customer.name) customer.name = customer.name.toUpperCase();
     if (customer.businessName) customer.businessName = customer.businessName.toUpperCase();
+    if (customer.business_name) customer.business_name = customer.business_name.toUpperCase();
     if (customer.firstName) customer.firstName = customer.firstName.toUpperCase();
     if (customer.lastName) customer.lastName = customer.lastName.toUpperCase();
     return customer;
@@ -67,7 +103,7 @@ class SalesService {
     if (productIds.length === 0) return items;
 
     const [products, invRows] = await Promise.all([
-      productRepository.findAll({ ids: productIds }, { limit: 1000 }),
+      productRepository.findAll({ ids: productIds, includeDeleted: true }, { limit: 1000 }),
       inventoryRepository.findByProductIds(productIds)
     ]);
     const invByProduct = new Map((invRows || []).map(inv => [String(inv.product_id), inv]));
@@ -90,7 +126,7 @@ class SalesService {
     }
     for (const id of productIds) {
       if (productMap.has(id)) continue;
-      const v = await productVariantRepository.findById(id);
+      const v = await productVariantRepository.findById(id, true);
       if (v) {
         const inv = invByProduct.get(id);
         const invData = v.inventory_data || v.inventory || {};
@@ -111,16 +147,55 @@ class SalesService {
       }
     }
 
-    return items.map(item => {
+    const results = [];
+    for (const item of items) {
       const i = { ...item };
       const p = i.product || i.product_id;
       const id = !p ? null : (typeof p === 'string' ? p : (p._id || p.id || p));
-      const sid = id && typeof id === 'string' ? id : (id && id.toString ? id.toString() : null);
+      const sid = (id && typeof id === 'string') ? id : (id && id.toString ? id.toString() : null);
+
       if (sid && productMap.has(sid)) {
         i.product = productMap.get(sid);
+      } else if (sid) {
+        // Fallback: If product not found in DB, use denormalized name/sku from the item itself
+        let fallbackName = i.name || i.productName || i.display_name;
+        let fallbackSku = i.sku || i.product_sku || i.productSku;
+
+        // Try Deep recovery if name is still unknown
+        if (!fallbackName || fallbackName === 'Unknown Product') {
+          try {
+            const { query } = require('../config/postgres');
+            const recoveryRes = await query(`
+              SELECT name, sku FROM (
+                SELECT (elem->>'name') as name, (elem->>'sku') as sku, s.created_at FROM sales s, jsonb_array_elements(CASE WHEN jsonb_typeof(s.items) = 'array' THEN s.items ELSE '[]'::jsonb END) elem WHERE (elem->>'product' = $1 OR elem->>'product_id' = $1)
+                UNION ALL
+                SELECT (elem->>'productName') as name, (elem->>'sku') as sku, pi.created_at FROM purchase_invoices pi, jsonb_array_elements(CASE WHEN jsonb_typeof(pi.items) = 'array' THEN pi.items ELSE '[]'::jsonb END) elem WHERE (elem->>'product' = $1 OR elem->>'product_id' = $1)
+                UNION ALL
+                SELECT (elem->>'name') as name, (elem->>'sku') as sku, so.created_at FROM sales_orders so, jsonb_array_elements(CASE WHEN jsonb_typeof(so.items) = 'array' THEN so.items ELSE '[]'::jsonb END) elem WHERE (elem->>'product' = $1 OR elem->>'product_id' = $1)
+              ) h WHERE name IS NOT NULL AND name != 'Unknown Product' ORDER BY created_at DESC LIMIT 1
+            `, [sid]);
+
+            if (recoveryRes.rows[0]) {
+              fallbackName = recoveryRes.rows[0].name;
+              fallbackSku = recoveryRes.rows[0].sku || fallbackSku;
+            }
+          } catch (e) { /* ignore */ }
+        }
+
+        i.product = {
+          _id: sid,
+          id: sid,
+          name: fallbackName || 'Unknown Product',
+          sku: fallbackSku || null,
+          imageUrl: i.imageUrl || i.image_url || null,
+          isDeleted: true
+        };
+      } else {
+        i.product = { name: 'Unknown Product', isDeleted: true };
       }
-      return i;
-    });
+      results.push(i);
+    }
+    return results;
   }
 
   /**
@@ -307,9 +382,17 @@ class SalesService {
 
     // Attach payment.amountPaid for invoice/print (stored on sale, or payments table, or paid-at-creation)
     const orderId = order.id || order._id;
+    const paymentStatusRaw = order.payment_status ?? order.paymentStatus ?? order.payment?.status;
+    const normalizedPaymentStatus = String(paymentStatusRaw || 'pending').toLowerCase();
+
     let amountPaid = parseFloat(order.amount_paid);
     if (Number.isNaN(amountPaid) || amountPaid < 0) amountPaid = 0;
-    if (amountPaid === 0) {
+
+    // If the invoice is explicitly pending, do not attempt to infer "amount paid"
+    // from ledger/payment history. This prevents accidental auto-fill in edit mode.
+    if (normalizedPaymentStatus === 'pending') {
+      amountPaid = 0;
+    } else if (amountPaid === 0) {
       try {
         amountPaid = await paymentRepository.calculateTotalPaid(orderId);
       } catch (_) { /* ignore */ }
@@ -329,7 +412,7 @@ class SalesService {
         amountPaid = parseFloat(ledgerResult.rows[0]?.total || 0);
       } catch (_) { /* ignore */ }
     }
-    if (amountPaid === 0 && (order.payment_status === 'paid' || order.paymentStatus === 'paid')) {
+    if (amountPaid === 0 && normalizedPaymentStatus === 'paid') {
       amountPaid = parseFloat(order.total) || 0;
     }
     order.payment = {
@@ -407,6 +490,11 @@ class SalesService {
     const { skipInventoryUpdate = false } = options;
     const { customer, items, orderType, payment, notes, isTaxExempt, billDate, billStartTime, salesOrderId, appliedDiscounts: payloadDiscounts, discountAmount: payloadDiscountAmount, subtotal: payloadSubtotal, total: payloadTotal, tax: payloadTax } = data;
 
+    // Generate order number if not provided
+    const settings = await settingsService.getCompanySettings();
+    const orderSettings = settings?.orderSettings || {};
+    const allowSaleWithoutProduct = orderSettings.allowSaleWithoutProduct === true;
+
     // Validate customer if provided
     let customerData = null;
     if (customer) {
@@ -423,54 +511,25 @@ class SalesService {
     let totalTax = 0;
 
     for (const item of items) {
-      const customName = typeof item.customName === 'string' ? item.customName.trim() : '';
-      const isCustomItem = Boolean(item.isCustom || (!item.product && customName));
-
-      if (isCustomItem) {
-        const unitPrice = Number(item.unitPrice) || 0;
-        const unitCost = Number(item.unitCost ?? item.cost_price ?? 0) || 0;
-        const itemDiscountPercent = Number(item.discountPercent) || 0;
-        const itemSubtotal = Number(item.quantity) * unitPrice;
-        const itemDiscount = itemSubtotal * (itemDiscountPercent / 100);
-        const itemTaxable = itemSubtotal - itemDiscount;
-        const taxRate = Number(item.taxRate) || 0;
-        const itemTax = isTaxExempt ? 0 : itemTaxable * taxRate;
-
-        orderItems.push({
-          product: null,
-          productName: customName || 'CUSTOM ITEM',
-          customName: customName || 'CUSTOM ITEM',
-          isCustom: true,
-          unit: item.unit || 'piece',
-          quantity: item.quantity,
-          unitCost,
-          cost_price: unitCost,
-          unitPrice,
-          discountPercent: itemDiscountPercent,
-          taxRate,
-          subtotal: itemSubtotal,
-          discountAmount: itemDiscount,
-          taxAmount: itemTax,
-          total: itemSubtotal - itemDiscount + itemTax
-        });
-
-        subtotal += itemSubtotal;
-        totalDiscount += itemDiscount;
-        totalTax += itemTax;
-        continue;
-      }
-
       // Try to find as product first, then as variant
-      let product = await productRepository.findById(item.product);
+      let product = null;
       let isVariant = false;
+      const isManual = item.isManual === true;
 
-      if (!product) {
-        product = await productVariantRepository.findById(item.product);
-        if (product) isVariant = true;
-      }
+      if (!isManual) {
+        product = await productRepository.findById(item.product, true);
+        if (!product) {
+          product = await productVariantRepository.findById(item.product, true);
+          if (product) isVariant = true;
+        }
 
-      if (!product) {
-        throw new Error(`Product or variant ${item.product} not found`);
+        if (!product) {
+          if (allowSaleWithoutProduct && item.name) {
+            // Fallback to manual if not found but setting allows
+          } else {
+            throw new Error(`Product or variant ${item.product} not found`);
+          }
+        }
       }
 
       // pricing logic (same as in sales.js)
@@ -491,20 +550,30 @@ class SalesService {
       const itemSubtotal = item.quantity * unitPrice;
       const itemDiscount = itemSubtotal * (itemDiscountPercent / 100);
       const itemTaxable = itemSubtotal - itemDiscount;
-      const taxRate = isVariant ? (product.baseProduct?.taxSettings?.taxRate ?? 0) : (product.tax_settings?.tax_rate ?? product.taxSettings?.taxRate ?? 0);
+      const taxRate = isManual ? 0 : (isVariant ? (product.baseProduct?.taxSettings?.taxRate ?? 0) : (product.tax_settings?.tax_rate ?? product.taxSettings?.taxRate ?? 0));
       const itemTax = isTaxExempt ? 0 : itemTaxable * taxRate;
 
       let unitCost = 0;
-      const productId = product.id || product._id;
-      const inv = await inventoryRepository.findByProduct(productId);
-      if (inv && inv.cost) {
-        const costObj = typeof inv.cost === 'string' ? JSON.parse(inv.cost) : inv.cost;
-        unitCost = costObj.average ?? costObj.lastPurchase ?? 0;
+      let productId = null;
+      if (product) {
+        productId = product.id || product._id;
+        const inv = await inventoryRepository.findByProduct(productId);
+        if (inv && inv.cost) {
+          const costObj = typeof inv.cost === 'string' ? JSON.parse(inv.cost) : inv.cost;
+          unitCost = costObj.average ?? costObj.lastPurchase ?? 0;
+        }
+        if (unitCost === 0) unitCost = product.pricing?.cost ?? product.cost_price ?? 0;
+      } else {
+        // Manual item
+        productId = item.product || `manual_${Date.now()}`;
+        unitCost = 0; // Cost is unknown for manual items
       }
-      if (unitCost === 0) unitCost = product.pricing?.cost ?? product.cost_price ?? 0;
 
       orderItems.push({
         product: productId,
+        name: product ? (product.name || product.displayName || 'Product') : (item.name || 'Manual Item'),
+        sku: product ? (product.sku || null) : (item.sku || null),
+        isManual: !!isManual || !product,
         quantity: item.quantity,
         unitCost,
         unitPrice,
@@ -526,7 +595,9 @@ class SalesService {
     let finalTax = totalTax;
     const appliedDiscountsForSale = Array.isArray(payloadDiscounts) ? payloadDiscounts : [];
 
-    if (appliedDiscountsForSale.length > 0 && (payloadDiscountAmount != null || payloadTotal != null)) {
+    // Accept POS-calculated invoice numbers (manual discount, code discount, tax/total overrides)
+    // even when no discount code is selected.
+    if (payloadDiscountAmount != null || payloadTax != null || payloadTotal != null) {
       if (payloadDiscountAmount != null) finalDiscount = Number(payloadDiscountAmount);
       if (payloadTax != null) finalTax = Number(payloadTax);
       if (payloadTotal != null) orderTotal = Number(payloadTotal);
@@ -554,8 +625,10 @@ class SalesService {
 
     // Inventory Updates (unless skipped)
     if (!skipInventoryUpdate) {
-      for (const item of items) {
-        if (item.isCustom || item.customName || !item.product) continue;
+      for (const item of orderItems) {
+        // Skip stock movement for manual items
+        if (item.isManual) continue;
+
         await inventoryService.updateStock({
           productId: item.product,
           type: 'out',
@@ -568,8 +641,31 @@ class SalesService {
       }
     }
 
-    // Generate order number if not provided (sales/invoices use INV-, not SO- which is for sales orders only)
-    const orderNumber = data.orderNumber || `KDPI${Date.now()}`;
+    let orderNumber = data.orderNumber;
+    // Settings already fetched at top
+
+    if (orderSettings.invoiceSequenceEnabled) {
+      const prefix = orderSettings.invoiceSequencePrefix || 'INV-';
+      const nextNum = orderSettings.invoiceSequenceNext || 1;
+      const padding = orderSettings.invoiceSequencePadding || 3;
+      
+      // If no orderNumber provided by frontend, use the one from settings
+      if (!orderNumber) {
+        orderNumber = `${prefix}${String(nextNum).padStart(padding, '0')}`;
+      }
+
+      // Always increment next number in settings if it's a NEW sale
+      await settingsService.updateCompanySettings({
+        orderSettings: {
+          ...orderSettings,
+          invoiceSequenceNext: nextNum + 1
+        }
+      });
+    }
+
+    if (!orderNumber) {
+      orderNumber = `INV-${Date.now()}`;
+    }
 
     // Prepare sale data for PostgreSQL (include applied discount codes when provided from POS)
     const amountPaidAtCreate = parseFloat(payment?.amount ?? 0) || 0;
@@ -584,7 +680,7 @@ class SalesService {
       total: orderTotal,
       amountPaid: amountPaidAtCreate,
       paymentMethod: payment.method,
-      paymentStatus: payment.isPartialPayment ? 'partial' : (String(payment.method || '').toLowerCase() === 'cash' ? 'paid' : 'pending'),
+      paymentStatus: resolveInvoicePaymentStatus(payment, orderTotal),
       status: 'confirmed',
       notes,
       createdBy: user.id || user._id?.toString(),
@@ -624,16 +720,14 @@ class SalesService {
       payment: paymentStatus ? { status: paymentStatus } : undefined
     };
 
-    const orderPayloadWithStockItems = {
-      ...orderPayload,
-      items: orderItems.filter((item) => item.product)
-    };
-    if (orderPayloadWithStockItems.items.length > 0) {
-      await StockMovementService.trackSalesOrder(orderPayloadWithStockItems, user, {});
-    }
+    await StockMovementService.trackSalesOrder(orderPayload, user, {});
 
     if (orderStatus === 'confirmed' && paymentStatus === 'paid') {
-      await profitDistributionService.distributeProfitForOrder(orderPayload, user, {});
+      try {
+        await profitDistributionService.distributeProfitForOrder(orderPayload, user, {});
+      } catch (profitErr) {
+        console.error('Profit distribution failed (sale still saved):', profitErr?.message || profitErr);
+      }
     }
 
     if (customer && orderTotal > 0) {
@@ -641,18 +735,29 @@ class SalesService {
       const isAccountPayment = payment.method === 'account' || amountPaid < orderTotal;
 
       if (isAccountPayment) {
-        const productIds = orderItems.map(item => item.product).filter(Boolean);
+        const productIds = orderItems.map(item => item.product);
         const productMap = new Map();
         for (const id of productIds) {
-          const p = await productRepository.findById(id);
-          if (p) productMap.set((id && id.toString ? id.toString() : id), p.name || p.displayName || 'Product');
+          // Skip if product is manual
+          if (typeof id === 'string' && id.startsWith('manual_')) {
+            const manualItem = orderItems.find(i => i.product === id);
+            productMap.set(id, manualItem?.name || 'Manual Item');
+            continue;
+          }
+
+          const p = await productRepository.findById(id, true);
+          if (!p) {
+            // Check variants if not found in base products
+            const v = await productVariantRepository.findById(id, true);
+            if (v) productMap.set((id && id.toString ? id.toString() : id), v.display_name || v.variant_name || 'Variant');
+          } else {
+            productMap.set((id && id.toString ? id.toString() : id), p.name || p.displayName || 'Product');
+          }
         }
 
         const lineItems = orderItems.map(item => ({
           product: item.product,
-          description: item.isCustom
-            ? (item.customName || item.productName || 'Custom Item')
-            : (productMap.get((item.product && item.product.toString ? item.product.toString() : item.product)) || 'Product'),
+          description: productMap.get((item.product && item.product.toString ? item.product.toString() : item.product)) || 'Product',
           quantity: item.quantity,
           unitPrice: item.unitPrice || 0,
           discountAmount: item.discountAmount || 0,
@@ -665,8 +770,8 @@ class SalesService {
           transactionType: 'invoice',
           netAmount: orderTotal,
           grossAmount: subtotal,
-          discountAmount: totalDiscount,
-          taxAmount: totalTax,
+          discountAmount: finalDiscount,
+          taxAmount: finalTax,
           referenceType: 'sales_order',
           referenceId: order.id,
           referenceNumber: order.order_number,
@@ -718,6 +823,7 @@ class SalesService {
   async createSaleFromSalesOrder(salesOrder, user) {
     const customerId = salesOrder.customer_id || salesOrder.customer;
     const items = Array.isArray(salesOrder.items) ? salesOrder.items : (typeof salesOrder.items === 'string' ? JSON.parse(salesOrder.items || '[]') : []);
+    const soOrderType = salesOrder.orderType ?? salesOrder.order_type ?? salesOrder.orderType ?? 'retail';
     const saleData = {
       customer: customerId,
       items: items.map(i => ({
@@ -726,13 +832,14 @@ class SalesService {
         unitPrice: i.unitPrice ?? i.unit_price ?? 0,
         discountPercent: i.discountPercent ?? i.discount_percent ?? 0
       })),
-      orderType: 'retail',
+      // Preserve Sales Order pricing mode (e.g. wholesale) when creating the invoice.
+      orderType: soOrderType,
       payment: { method: 'account', amount: 0, isPartialPayment: false },
       notes: `From Sales Order ${salesOrder.so_number || salesOrder.soNumber || salesOrder.id}`,
       isTaxExempt: salesOrder.is_tax_exempt ?? salesOrder.isTaxExempt ?? false,
       billDate: salesOrder.order_date || salesOrder.orderDate || new Date(),
       salesOrderId: salesOrder.id || salesOrder._id,
-      orderNumber: `KDPI${(salesOrder.so_number || salesOrder.soNumber || salesOrder.id || '').toString().replace(/^SO-/, '')}`
+      orderNumber: `INV-${(salesOrder.so_number || salesOrder.soNumber || salesOrder.id || '').toString().replace(/^SO-/, '')}`
     };
     return await this.createSale(saleData, user, { skipInventoryUpdate: true });
   }
@@ -751,6 +858,7 @@ class SalesService {
       .map(idx => items[idx])
       .filter(i => (i.confirmationStatus ?? i.confirmation_status) === 'confirmed');
     if (itemsToInvoice.length === 0) return null;
+    const soOrderType = salesOrder.orderType ?? salesOrder.order_type ?? salesOrder.orderType ?? 'retail';
     const soRef = (salesOrder.so_number || salesOrder.soNumber || salesOrder.id || '').toString().replace(/^SO-/, '');
     const saleData = {
       customer: salesOrder.customer_id || salesOrder.customer,
@@ -760,13 +868,14 @@ class SalesService {
         unitPrice: i.unitPrice ?? i.unit_price ?? 0,
         discountPercent: i.discountPercent ?? i.discount_percent ?? 0
       })),
-      orderType: 'retail',
+      // Preserve Sales Order pricing mode (e.g. wholesale) when creating the invoice.
+      orderType: soOrderType,
       payment: { method: 'account', amount: 0, isPartialPayment: false },
       notes: `From Sales Order ${salesOrder.so_number || salesOrder.soNumber || salesOrder.id} (partial)`,
       isTaxExempt: salesOrder.is_tax_exempt ?? salesOrder.isTaxExempt ?? false,
       billDate: salesOrder.order_date || salesOrder.orderDate || new Date(),
       salesOrderId: salesOrder.id || salesOrder._id,
-      orderNumber: `KDPI${soRef}-${Date.now().toString(36)}`
+      orderNumber: `INV-${soRef}-${Date.now().toString(36)}`
     };
     return await this.createSale(saleData, user, { skipInventoryUpdate: true });
   }

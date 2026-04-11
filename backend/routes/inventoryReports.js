@@ -27,11 +27,11 @@ router.post('/generate', [
     .isIn(['daily', 'weekly', 'monthly', 'quarterly', 'yearly', 'custom'])
     .withMessage('Invalid period type. Must be one of: daily, weekly, monthly, quarterly, yearly, custom'),
   body('startDate')
-    .optional()
+    .optional({ checkFalsy: true })
     .isISO8601()
     .withMessage('Start date must be a valid ISO 8601 date'),
   body('endDate')
-    .optional()
+    .optional({ checkFalsy: true })
     .isISO8601()
     .withMessage('End date must be a valid ISO 8601 date'),
   body('includeMetrics')
@@ -92,11 +92,11 @@ router.post('/', [
     .isIn(['daily', 'weekly', 'monthly', 'quarterly', 'yearly', 'custom'])
     .withMessage('Invalid period type. Must be one of: daily, weekly, monthly, quarterly, yearly, custom'),
   body('startDate')
-    .optional()
+    .optional({ checkFalsy: true })
     .isISO8601()
     .withMessage('Start date must be a valid ISO 8601 date'),
   body('endDate')
-    .optional()
+    .optional({ checkFalsy: true })
     .isISO8601()
     .withMessage('End date must be a valid ISO 8601 date'),
   body('includeMetrics')
@@ -191,10 +191,25 @@ router.get('/:reportId', [
 ], async (req, res) => {
   try {
     const report = await inventoryReportService.getInventoryReportById(req.params.reportId);
-    
-    // Mark as viewed
-    await report.markAsViewed();
-    
+
+    // Persist view tracking in config JSONB for Postgres implementation.
+    if (report?.id) {
+      const nowIso = new Date().toISOString();
+      const nextViewCount = Number(report.viewCount || 0) + 1;
+      const nextConfig = {
+        ...(report.config || {}),
+        lastViewedAt: nowIso,
+        viewCount: nextViewCount
+      };
+      await inventoryReportRepository.updateById(report.id, { config: nextConfig });
+      return res.json({
+        ...report,
+        config: nextConfig,
+        lastViewedAt: nowIso,
+        viewCount: nextViewCount
+      });
+    }
+
     res.json(report);
   } catch (error) {
     console.error('Error fetching inventory report:', error);
@@ -275,44 +290,7 @@ router.put('/:reportId/favorite', [
   }
 });
 
-// @route   POST /api/inventory-reports/:reportId/export
-// @desc    Export inventory report
-// @access  Private (requires 'view_reports' permission)
-router.post('/:reportId/export', [
-  auth,
-  requirePermission('view_reports'),
-  sanitizeRequest,
-  param('reportId').isLength({ min: 1 }).withMessage('Report ID is required'),
-  body('format').isIn(['pdf', 'excel', 'csv', 'json']).withMessage('Invalid export format'),
-  handleValidationErrors,
-], async (req, res) => {
-  try {
-    const { reportId } = req.params;
-    const { format } = req.body;
 
-    const report = await inventoryReportRepository.findByReportId(reportId);
-    if (!report) {
-      return res.status(404).json({ message: 'Inventory report not found' });
-    }
-
-    // Add export record
-    await report.addExport(format, req.user._id);
-    await report.save();
-
-    res.json({
-      message: `Export initiated for ${format.toUpperCase()} format`,
-      exportId: `${reportId}-${format}-${Date.now()}`,
-      format,
-      status: 'processing'
-    });
-  } catch (error) {
-    console.error('Error exporting inventory report:', error);
-    res.status(500).json({ 
-      message: 'Server error exporting inventory report', 
-      error: error.message 
-    });
-  }
-});
 
 // @route   GET /api/inventory-reports/quick/stock-levels
 // @desc    Get quick stock levels data
@@ -568,24 +546,27 @@ router.get('/quick/summary', [
     const summarySql = `
       SELECT
         COUNT(*) as "totalProducts",
-        SUM(COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0) * COALESCE(p.cost_price, 0)) as "totalStockValue",
         SUM(
-          COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0) *
-          COALESCE(p.wholesale_price, p.selling_price, 0)
+          COALESCE(NULLIF(ib.quantity, 'NaN'), NULLIF(i.current_stock, 'NaN'), NULLIF(p.stock_quantity, 'NaN'), 0) * 
+          COALESCE(NULLIF(p.cost_price, 'NaN'), 0)
+        ) as "totalStockValue",
+        SUM(
+          COALESCE(NULLIF(ib.quantity, 'NaN'), NULLIF(i.current_stock, 'NaN'), NULLIF(p.stock_quantity, 'NaN'), 0) *
+          COALESCE(NULLIF(p.wholesale_price, 'NaN'), NULLIF(p.selling_price, 'NaN'), 0)
         ) as "totalWholesaleValue",
         SUM(
-          COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0) *
-          COALESCE(p.selling_price, p.wholesale_price, 0)
+          COALESCE(NULLIF(ib.quantity, 'NaN'), NULLIF(i.current_stock, 'NaN'), NULLIF(p.stock_quantity, 'NaN'), 0) *
+          COALESCE(NULLIF(p.selling_price, 'NaN'), NULLIF(p.wholesale_price, 'NaN'), 0)
         ) as "totalRetailValue",
         COUNT(*) FILTER (
-          WHERE COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0) > 0
-            AND COALESCE(p.min_stock_level, 0) > 0
-            AND COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0) <= COALESCE(p.min_stock_level, 0)
+          WHERE COALESCE(NULLIF(ib.quantity, 'NaN'), NULLIF(i.current_stock, 'NaN'), NULLIF(p.stock_quantity, 'NaN'), 0) > 0
+            AND COALESCE(NULLIF(p.min_stock_level, 'NaN'), 0) > 0
+            AND COALESCE(NULLIF(ib.quantity, 'NaN'), NULLIF(i.current_stock, 'NaN'), NULLIF(p.stock_quantity, 'NaN'), 0) <= COALESCE(NULLIF(p.min_stock_level, 'NaN'), 0)
         ) as "lowStockProducts",
-        COUNT(*) FILTER (WHERE COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0) = 0) as "outOfStockProducts",
+        COUNT(*) FILTER (WHERE COALESCE(NULLIF(ib.quantity, 'NaN'), NULLIF(i.current_stock, 'NaN'), NULLIF(p.stock_quantity, 'NaN'), 0) = 0) as "outOfStockProducts",
         COUNT(*) FILTER (
-          WHERE COALESCE(ib.quantity, i.current_stock, p.stock_quantity, 0) >
-            (COALESCE(p.min_stock_level, 0) * 3)
+          WHERE COALESCE(NULLIF(ib.quantity, 'NaN'), NULLIF(i.current_stock, 'NaN'), NULLIF(p.stock_quantity, 'NaN'), 0) >
+            (COALESCE(NULLIF(p.min_stock_level, 'NaN'), 0) * 3)
         ) as "overstockedProducts"
       FROM products p
       LEFT JOIN inventory_balance ib ON ib.product_id = p.id

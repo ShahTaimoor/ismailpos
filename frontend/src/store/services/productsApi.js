@@ -49,14 +49,9 @@ export const productsApi = api.injectEndpoints({
       invalidatesTags: [
         { type: 'Products', id: 'LIST' },
         { type: 'Products', id: 'SEARCH' },
-        { type: 'Products', id: 'LOW_STOCK' },
+        { type: 'LowStock', id: 'LIST' },
         { type: 'Inventory', id: 'LIST' },
         { type: 'Inventory', id: 'SUMMARY' },
-        { type: 'Inventory', id: 'LOW_STOCK' },
-        { type: 'StockLedger', id: 'LIST' },
-        { type: 'Reports', id: 'PRODUCT_REPORT' },
-        { type: 'Reports', id: 'INVENTORY_REPORT' },
-        { type: 'Reports', id: 'SUMMARY_CARDS' },
       ],
     }),
     updateProduct: builder.mutation({
@@ -69,14 +64,8 @@ export const productsApi = api.injectEndpoints({
         { type: 'Products', id },
         { type: 'Products', id: 'LIST' },
         { type: 'Products', id: 'SEARCH' },
-        { type: 'Products', id: 'LOW_STOCK' },
         { type: 'Inventory', id: 'LIST' },
         { type: 'Inventory', id: 'SUMMARY' },
-        { type: 'Inventory', id: 'LOW_STOCK' },
-        { type: 'StockLedger', id: 'LIST' },
-        { type: 'Reports', id: 'PRODUCT_REPORT' },
-        { type: 'Reports', id: 'INVENTORY_REPORT' },
-        { type: 'Reports', id: 'SUMMARY_CARDS' },
       ],
     }),
     deleteProduct: builder.mutation({
@@ -88,14 +77,8 @@ export const productsApi = api.injectEndpoints({
         { type: 'Products', id },
         { type: 'Products', id: 'LIST' },
         { type: 'Products', id: 'SEARCH' },
-        { type: 'Products', id: 'LOW_STOCK' },
         { type: 'Inventory', id: 'LIST' },
         { type: 'Inventory', id: 'SUMMARY' },
-        { type: 'Inventory', id: 'LOW_STOCK' },
-        { type: 'StockLedger', id: 'LIST' },
-        { type: 'Reports', id: 'PRODUCT_REPORT' },
-        { type: 'Reports', id: 'INVENTORY_REPORT' },
-        { type: 'Reports', id: 'SUMMARY_CARDS' },
       ],
     }),
     bulkUpdateProducts: builder.mutation({
@@ -107,14 +90,8 @@ export const productsApi = api.injectEndpoints({
       invalidatesTags: [
         { type: 'Products', id: 'LIST' },
         { type: 'Products', id: 'SEARCH' },
-        { type: 'Products', id: 'LOW_STOCK' },
         { type: 'Inventory', id: 'LIST' },
         { type: 'Inventory', id: 'SUMMARY' },
-        { type: 'Inventory', id: 'LOW_STOCK' },
-        { type: 'StockLedger', id: 'LIST' },
-        { type: 'Reports', id: 'PRODUCT_REPORT' },
-        { type: 'Reports', id: 'INVENTORY_REPORT' },
-        { type: 'Reports', id: 'SUMMARY_CARDS' },
       ],
     }),
     bulkDeleteProducts: builder.mutation({
@@ -126,14 +103,8 @@ export const productsApi = api.injectEndpoints({
       invalidatesTags: [
         { type: 'Products', id: 'LIST' },
         { type: 'Products', id: 'SEARCH' },
-        { type: 'Products', id: 'LOW_STOCK' },
         { type: 'Inventory', id: 'LIST' },
         { type: 'Inventory', id: 'SUMMARY' },
-        { type: 'Inventory', id: 'LOW_STOCK' },
-        { type: 'StockLedger', id: 'LIST' },
-        { type: 'Reports', id: 'PRODUCT_REPORT' },
-        { type: 'Reports', id: 'INVENTORY_REPORT' },
-        { type: 'Reports', id: 'SUMMARY_CARDS' },
       ],
     }),
     searchProducts: builder.query({
@@ -166,7 +137,7 @@ export const productsApi = api.injectEndpoints({
     }),
     linkInvestors: builder.mutation({
       query: ({ productId, investors }) => ({
-        url: `products/${productId}/link-investors`,
+        url: `products/${productId}/investors`,
         method: 'post',
         data: { investors },
       }),
@@ -174,92 +145,19 @@ export const productsApi = api.injectEndpoints({
         { type: 'Products', id: productId },
         { type: 'Products', id: 'LIST' },
         { type: 'Products', id: 'SEARCH' },
-        { type: 'Settings', id: 'INVESTORS_LIST' },
-        { type: 'Accounting' },
-        { type: 'Accounting', id: 'PROFIT_SHARES' },
-        { type: 'Accounting', id: 'PROFIT_SUMMARY' },
-        { type: 'Reports', id: 'PRODUCT_REPORT' },
-        { type: 'Reports', id: 'INVENTORY_REPORT' },
-        { type: 'Reports', id: 'SUMMARY_CARDS' },
       ],
     }),
-    exportCSV: builder.mutation({
-      query: (filters) => ({
-        url: 'products/export/csv',
+    bulkCreateProducts: builder.mutation({
+      query: (products) => ({
+        url: 'products/bulk-create',
         method: 'post',
-        data: { filters },
+        data: { products },
       }),
-    }),
-    exportExcel: builder.mutation({
-      query: (filters) => ({
-        url: 'products/export/excel',
-        method: 'post',
-        data: { filters },
-      }),
-    }),
-    importExcel: builder.mutation({
-      query: (file) => {
-        const formData = new FormData();
-        formData.append('file', file);
-        return {
-          url: 'products/import/excel',
-          method: 'post',
-          data: formData,
-        };
-      },
       invalidatesTags: [
         { type: 'Products', id: 'LIST' },
         { type: 'Products', id: 'SEARCH' },
-        { type: 'Products', id: 'LOW_STOCK' },
         { type: 'Inventory', id: 'LIST' },
-        { type: 'Inventory', id: 'SUMMARY' },
-        { type: 'Inventory', id: 'LOW_STOCK' },
-        { type: 'StockLedger', id: 'LIST' },
-        { type: 'Reports', id: 'PRODUCT_REPORT' },
-        { type: 'Reports', id: 'INVENTORY_REPORT' },
-        { type: 'Reports', id: 'SUMMARY_CARDS' },
       ],
-    }),
-    importCSV: builder.mutation({
-      query: (file) => {
-        const formData = new FormData();
-        formData.append('file', file);
-        return {
-          url: 'products/import/csv',
-          method: 'post',
-          data: formData,
-        };
-      },
-      invalidatesTags: [
-        { type: 'Products', id: 'LIST' },
-        { type: 'Products', id: 'SEARCH' },
-        { type: 'Products', id: 'LOW_STOCK' },
-        { type: 'Inventory', id: 'LIST' },
-        { type: 'Inventory', id: 'SUMMARY' },
-        { type: 'Inventory', id: 'LOW_STOCK' },
-        { type: 'StockLedger', id: 'LIST' },
-        { type: 'Reports', id: 'PRODUCT_REPORT' },
-        { type: 'Reports', id: 'INVENTORY_REPORT' },
-        { type: 'Reports', id: 'SUMMARY_CARDS' },
-      ],
-    }),
-    downloadFile: builder.query({
-      query: (filename) => ({
-        url: `products/download/${filename}`,
-        method: 'get',
-        responseType: 'blob',
-      }),
-      providesTags: [{ type: 'Products', id: 'EXPORT' }],
-    }),
-    // Download CSV template for product import
-    downloadTemplate: builder.query({
-      query: () => ({
-        // Backend route: GET /api/products/template/csv
-        url: 'products/template/csv',
-        method: 'get',
-        responseType: 'blob',
-      }),
-      providesTags: [{ type: 'Products', id: 'TEMPLATE' }],
     }),
   }),
   overrideExisting: false,
@@ -279,12 +177,5 @@ export const {
   useLazyGetLastPurchasePriceQuery,
   useGetLastPurchasePricesMutation,
   useLinkInvestorsMutation,
-  useExportCSVMutation,
-  useExportExcelMutation,
-  useImportExcelMutation,
-  useImportCSVMutation,
-  useLazyDownloadFileQuery,
-  useDownloadTemplateQuery,
-  useLazyDownloadTemplateQuery,
+  useBulkCreateProductsMutation,
 } = productsApi;
-

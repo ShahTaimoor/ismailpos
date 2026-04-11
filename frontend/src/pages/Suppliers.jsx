@@ -13,15 +13,21 @@ import {
   Clock,
   TrendingUp,
   User,
-  MessageSquare
+  MessageSquare,
+  FileSpreadsheet,
+  Download,
 } from 'lucide-react';
-import { useFuzzySearch } from '../hooks/useFuzzySearch';
-import { toast } from 'sonner';
-import { LoadingSpinner, LoadingButton, LoadingCard, LoadingGrid, LoadingPage, LoadingInline } from '../components/LoadingSpinner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import SupplierImportExport from '../components/SupplierImportExport';
+import ExcelExportButton from '../components/ExcelExportButton';
+import PdfExportButton from '../components/PdfExportButton';
+import ExcelImportButton from '../components/ExcelImportButton';
+import { exportTemplate } from '../utils/excelExport';
+import { useFuzzySearch } from '../hooks/useFuzzySearch';
+import { toast } from 'sonner';
+import { LoadingSpinner, LoadingButton, LoadingCard, LoadingGrid, LoadingPage, LoadingInline } from '../components/LoadingSpinner';
+
 import SupplierFilters from '../components/SupplierFilters';
 import NotesPanel from '../components/NotesPanel';
 import {
@@ -32,6 +38,8 @@ import {
   useLazyCheckEmailQuery,
   useLazyCheckCompanyNameQuery,
   useLazyCheckContactNameQuery,
+  useGetSupplierQuery,
+  useBulkCreateSuppliersMutation,
 } from '../store/services/suppliersApi';
 import { useGetAccountsQuery } from '../store/services/chartOfAccountsApi';
 import { useGetCitiesQuery, useGetActiveCitiesQuery } from '../store/services/citiesApi';
@@ -224,7 +232,7 @@ const SupplierForm = ({ supplier, onSave, onCancel, isOpen, isSubmitting }) => {
     const timeoutId = setTimeout(async () => {
       try {
         setEmailChecking(true);
-        const excludeId = supplier?._id || null;
+        const excludeId = supplier?.id || supplier?._id || null;
         const response = await triggerCheckEmail({ email: formData.email, excludeId }).unwrap();
         const exists = response?.data?.exists ?? response?.exists;
         setEmailExists(!!exists);
@@ -257,7 +265,7 @@ const SupplierForm = ({ supplier, onSave, onCancel, isOpen, isSubmitting }) => {
     const timeoutId = setTimeout(async () => {
       try {
         setCompanyNameChecking(true);
-        const excludeId = supplier?._id || null;
+        const excludeId = supplier?.id || supplier?._id || null;
         const response = await triggerCheckCompany({ companyName: formData.companyName, excludeId }).unwrap();
         const exists = response?.data?.exists ?? response?.exists;
         setCompanyNameExists(!!exists);
@@ -290,7 +298,7 @@ const SupplierForm = ({ supplier, onSave, onCancel, isOpen, isSubmitting }) => {
     const timeoutId = setTimeout(async () => {
       try {
         setContactNameChecking(true);
-        const excludeId = supplier?._id || null;
+        const excludeId = supplier?.id || supplier?._id || null;
         const response = await triggerCheckContact({ contactName: formData.contactPerson.name, excludeId }).unwrap();
         const exists = response?.data?.exists ?? response?.exists;
         setContactNameExists(!!exists);
@@ -629,7 +637,7 @@ const SupplierForm = ({ supplier, onSave, onCancel, isOpen, isSubmitting }) => {
                         />
                       </div>
                       <div className="min-w-0">
-                        <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1 sm:mb-2">Country *</label>
+                        <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1 sm:mb-2">City *</label>
                         <select
                           value={address.city || ''}
                           onChange={(e) => handleAddressChange(index, 'city', e.target.value)}
@@ -637,7 +645,7 @@ const SupplierForm = ({ supplier, onSave, onCancel, isOpen, isSubmitting }) => {
                           required
                           disabled={citiesLoading}
                         >
-                          <option value="">Select a country</option>
+                          <option value="">Select a city</option>
                           {Array.isArray(citiesData) && citiesData.map((city) => (
                             <option key={city._id || city.name} value={city.name}>
                               {city.name}{city.state ? `, ${city.state}` : ''}
@@ -645,7 +653,7 @@ const SupplierForm = ({ supplier, onSave, onCancel, isOpen, isSubmitting }) => {
                           ))}
                         </select>
                         {citiesLoading && (
-                          <p className="text-xs text-gray-500 mt-1">Loading countries...</p>
+                          <p className="text-xs text-gray-500 mt-1">Loading cities...</p>
                         )}
                         {!citiesLoading && citiesData.length === 0 && (
                           <p className="text-xs text-amber-600 mt-1">
@@ -726,6 +734,7 @@ export const Suppliers = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(DEFAULT_LIMIT);
   const [filters, setFilters] = useState({});
+  const [refreshToken, setRefreshToken] = useState(0);
   const [selectedSupplier, setSelectedSupplier] = useState(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
@@ -735,6 +744,7 @@ export const Suppliers = () => {
     search: searchTerm || undefined,
     page: currentPage,
     limit: itemsPerPage,
+    _refresh: refreshToken || undefined,
     ...filters
   };
 
@@ -813,7 +823,7 @@ export const Suppliers = () => {
     };
 
     if (selectedSupplier) {
-      updateSupplier({ id: selectedSupplier._id, data: cleanData })
+      updateSupplier({ id: selectedSupplier.id || selectedSupplier._id, data: cleanData })
         .unwrap()
         .then(() => {
           toast.success('Supplier updated successfully!');
@@ -852,7 +862,7 @@ export const Suppliers = () => {
 
   const handleDelete = (supplier) => {
     if (window.confirm(`Are you sure you want to delete ${supplier.companyName}?`)) {
-      deleteSupplier(supplier._id)
+      deleteSupplier(supplier.id || supplier._id)
         .unwrap()
         .then(() => {
           toast.success('Supplier deleted successfully!');
@@ -863,10 +873,68 @@ export const Suppliers = () => {
         });
     }
   };
-
   const handleAddNew = () => {
     setSelectedSupplier(null);
     setIsFormOpen(true);
+  };
+
+  const getExportData = () => ({
+    title: 'Supplier Directory',
+    filename: `Suppliers_${new Date().toLocaleDateString()}.xlsx`,
+    columns: [
+      { header: 'Company Name', key: 'companyName', width: 35 },
+      { header: 'Contact Person', key: 'contactPersonName', width: 25 },
+      { header: 'Phone', key: 'phone', width: 20 },
+      { header: 'Email', key: 'email', width: 30 },
+      { header: 'Type', key: 'businessType', width: 15 },
+      { header: 'Rating', key: 'rating', width: 10, type: 'number' },
+      { header: 'Balance', key: 'currentBalance', width: 15, type: 'currency' }
+    ],
+    data: allSuppliers.map(s => ({
+      ...s,
+      companyName: s.companyName || s.company_name || s.businessName || '',
+      contactPersonName: s.contactPerson?.name || s.contact_person || '',
+      currentBalance: s.currentBalance ?? s.balance ?? 0,
+      phone: s.phone || s.contact_phone || ''
+    }))
+  });
+
+  const handleDownloadTemplate = () => {
+    exportTemplate({
+      title: 'Supplier Import Template',
+      filename: 'Supplier_Template.xlsx',
+      columns: [
+        { header: 'Company Name', key: 'companyName', width: 35 },
+        { header: 'Contact Person', key: 'contactPerson', width: 25 },
+        { header: 'Phone', key: 'phone', width: 20 },
+        { header: 'Email', key: 'email', width: 30 },
+        { header: 'Business Type', key: 'type', width: 15 },
+        { header: 'Opening Balance', key: 'balance', width: 15, type: 'currency' }
+      ]
+    });
+  };
+
+  const [bulkCreateSuppliers] = useBulkCreateSuppliersMutation();
+
+  const handleImportData = async (data) => {
+    if (!data || data.length === 0) return;
+
+    const toastId = toast.loading(`Saving ${data.length} suppliers to database...`);
+    try {
+      const response = await bulkCreateSuppliers(data).unwrap();
+      if (response.created > 0) {
+        toast.success(`Successfully imported ${response.created} suppliers!`, { id: toastId });
+        if (response.failed > 0) {
+          toast.warning(`${response.failed} suppliers failed. Check console for details.`);
+          console.warn('Import failures:', response.errors);
+        }
+      } else {
+        toast.error('Failed to import suppliers. Check file format.', { id: toastId });
+      }
+    } catch (error) {
+      console.error('Bulk Import Error:', error);
+      toast.error(error.data?.message || 'Error occurred while saving suppliers.', { id: toastId });
+    }
   };
 
 
@@ -877,15 +945,27 @@ export const Suppliers = () => {
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Suppliers</h1>
           <p className="text-sm sm:text-base text-gray-600 mt-1">Manage your supplier relationships and information</p>
         </div>
-        <div className="flex-shrink-0 w-full sm:w-auto">
+        <div className="flex-shrink-0 flex flex-wrap items-center gap-2 w-full sm:w-auto">
           <Button
-            onClick={handleAddNew}
+            onClick={() => handleAddNew()}
             variant="default"
             size="default"
-            className="flex items-center justify-center gap-2 w-full sm:w-auto"
+            className="flex items-center justify-center gap-2 bg-zinc-900 hover:bg-zinc-800 text-white transition-all shadow-md active:scale-95 px-6 font-bold tracking-tight"
           >
             <Plus className="h-4 w-4" />
-            Add Supplier
+            <span className="uppercase">ADD SUPPLIER</span>
+          </Button>
+          <ExcelExportButton getData={getExportData} label="Export" />
+          <PdfExportButton getData={getExportData} label="PDF" />
+          <ExcelImportButton onDataImported={handleImportData} label="Import" />
+          <Button
+            onClick={handleDownloadTemplate}
+            variant="outline"
+            size="sm"
+            className="group flex items-center justify-center gap-2 border-orange-200 bg-white text-orange-600 hover:bg-orange-50 hover:border-orange-500 h-9 px-3 rounded-lg shadow-sm transition-all duration-200"
+          >
+            <Download className="h-3.5 w-3.5 group-hover:-translate-y-0.5 transition-transform" />
+            <span className="text-xs font-semibold tracking-tight uppercase">Template</span>
           </Button>
         </div>
       </div>
@@ -917,11 +997,7 @@ export const Suppliers = () => {
         </div>
       </div>
 
-      {/* Import/Export Section */}
-      <SupplierImportExport
-        onImportComplete={() => queryClient.invalidateQueries('suppliers')}
-        filters={{ ...queryParams, limit: 999999, page: 1 }}
-      />
+
 
       {/* Advanced Filters */}
       <SupplierFilters
@@ -978,7 +1054,7 @@ export const Suppliers = () => {
             {/* Supplier Rows */}
             <div className="divide-y divide-gray-200">
               {filteredSuppliers.map((supplier) => (
-                <div key={supplier._id} className="px-4 py-4 lg:px-8 lg:py-6 hover:bg-gray-50">
+                <div key={supplier.id || supplier._id} className="px-4 py-4 lg:px-8 lg:py-6 hover:bg-gray-50">
                   {/* Mobile Card Layout */}
                   <div className="md:hidden space-y-4">
                     <div className="flex items-start justify-between">
@@ -996,7 +1072,7 @@ export const Suppliers = () => {
                       <div className="flex items-center space-x-2 ml-2">
                         <button
                           onClick={() => {
-                            setNotesEntity({ type: 'Supplier', id: supplier._id, name: supplier.companyName || supplier.company_name || supplier.businessName || 'Supplier' });
+                            setNotesEntity({ type: 'Supplier', id: supplier.id || supplier._id, name: supplier.companyName || supplier.company_name || supplier.businessName || 'Supplier' });
                             setShowNotes(true);
                           }}
                           className="text-green-600 hover:text-green-800 p-1"
@@ -1133,7 +1209,7 @@ export const Suppliers = () => {
                       <div className="flex items-center space-x-2 lg:space-x-3">
                         <button
                           onClick={() => {
-                            setNotesEntity({ type: 'Supplier', id: supplier._id, name: supplier.companyName || supplier.company_name || supplier.businessName || 'Supplier' });
+                            setNotesEntity({ type: 'Supplier', id: supplier.id || supplier._id, name: supplier.companyName || supplier.company_name || supplier.businessName || 'Supplier' });
                             setShowNotes(true);
                           }}
                           className="text-green-600 hover:text-green-800 p-1"

@@ -57,7 +57,17 @@ const MIGRATIONS = [
   '036_allow_duplicate_products_sku.sql',
   '037_item_wise_confirmation.sql',
   '038_order_settings.sql',
-  '039_products_pieces_per_box.sql'
+  '039_products_pieces_per_box.sql',
+  '040_add_image_to_products.sql',
+  '041_add_hs_code_to_products.sql',
+  '042_product_investors.sql',
+  '043_investor_payouts.sql',
+  '044_backfill_investor_payouts_from_totals.sql',
+  '045_investor_payout_ledger.sql',
+  '046_add_order_type_to_sales_orders.sql',
+  '046_products_customs_fields.sql',
+  '047_products_import_refs.sql',
+  '048_backfill_customer_opening_balance_to_ledger.sql'
 ];
 
 async function ensureMigrationsTable() {

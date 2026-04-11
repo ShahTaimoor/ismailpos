@@ -1,12 +1,7 @@
 const express = require('express');
 const { body, validationResult, query } = require('express-validator');
-const ExcelJS = require('exceljs');
-const XLSX = require('xlsx');
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
-const http = require('http');
-const PDFDocument = require('pdfkit');
 const { auth, requirePermission } = require('../middleware/auth');
 const { handleValidationErrors } = require('../middleware/validation');
 const { validateDateParams, processDateFilter } = require('../middleware/dateFilter');
@@ -23,7 +18,7 @@ const customerRepository = require('../repositories/postgres/CustomerRepository'
 const productRepository = require('../repositories/postgres/ProductRepository');
 const productVariantRepository = require('../repositories/postgres/ProductVariantRepository');
 const inventoryRepository = require('../repositories/InventoryRepository');
-const { query: pgQuery } = require('../config/postgres');
+
 const router = express.Router();
 
 // Helper functions to transform names to uppercase
@@ -76,22 +71,55 @@ const enrichItemsWithProducts = async (items) => {
   if (!items || !Array.isArray(items)) return;
   for (const item of items) {
     const productId = item.product || item.product_id;
-    if (!productId || item.isCustom || item.customName) continue;
+    if (!productId) continue;
     const id = typeof productId === 'object' ? (productId.id || productId._id) : productId;
-    if (typeof id !== 'string') continue;
-    if (typeof item.product === 'object' && item.product && (item.product.name || item.product.displayName)) continue; // Already populated
+    if (typeof id !== 'string' && !(id && id.toString)) continue;
+    const sid = String(id);
+
+    // If already populated with a name, we can skip lookup but check if it's 'Unknown Product'
+    if (typeof item.product === 'object' && item.product && item.product.name && item.product.name !== 'Unknown Product') continue;
+    if (item.name && item.name !== 'Unknown Product') {
+       if (typeof item.product !== 'object') {
+         item.product = { _id: sid, id: sid, name: item.name, sku: item.sku || item.productSku };
+       }
+       continue;
+    }
+
     try {
-      let p = await productRepository.findById(id);
+      let p = await productRepository.findById(sid, true);
       if (p) {
-        item.product = { ...p, name: p.name || p.displayName };
+        item.product = { ...p, id: sid, _id: sid, name: p.name || p.displayName, sku: p.sku };
+        item.name = p.name || p.displayName;
+        item.sku = p.sku;
       } else {
-        p = await productVariantRepository.findById(id);
+        p = await productVariantRepository.findById(sid, true);
         if (p) {
-          item.product = { name: p.display_name ?? p.displayName ?? p.variant_name ?? p.variantName ?? 'Product' };
+          const vname = p.display_name ?? p.displayName ?? p.variant_name ?? p.variantName ?? 'Product';
+          item.product = { ...p, id: sid, _id: sid, name: vname, sku: p.sku };
+          item.name = vname;
+          item.sku = p.sku;
+        } else {
+          // DEEP RECOVERY: Search history for this product ID in sales or purchase invoices
+          const { query } = require('../config/postgres');
+          const recoveryRes = await query(`
+            SELECT name, sku FROM (
+              SELECT (elem->>'name') as name, (elem->>'sku') as sku, s.created_at FROM sales s, jsonb_array_elements(CASE WHEN jsonb_typeof(s.items) = 'array' THEN s.items ELSE '[]'::jsonb END) elem WHERE (elem->>'product' = $1 OR elem->>'product_id' = $1)
+              UNION ALL
+              SELECT (elem->>'productName') as name, (elem->>'sku') as sku, pi.created_at FROM purchase_invoices pi, jsonb_array_elements(CASE WHEN jsonb_typeof(pi.items) = 'array' THEN pi.items ELSE '[]'::jsonb END) elem WHERE (elem->>'product' = $1 OR elem->>'product_id' = $1)
+              UNION ALL
+              SELECT (elem->>'name') as name, (elem->>'sku') as sku, so.created_at FROM sales_orders so, jsonb_array_elements(CASE WHEN jsonb_typeof(so.items) = 'array' THEN so.items ELSE '[]'::jsonb END) elem WHERE (elem->>'product' = $1 OR elem->>'product_id' = $1)
+            ) h WHERE name IS NOT NULL AND name != 'Unknown Product' ORDER BY created_at DESC LIMIT 1
+          `, [sid]);
+
+          const recoveredName = recoveryRes.rows[0]?.name || item.name || item.productName || 'Unknown Product';
+          const recoveredSku = recoveryRes.rows[0]?.sku || item.sku || item.productSku || null;
+          item.product = { _id: sid, id: sid, name: recoveredName, sku: recoveredSku };
+          item.name = recoveredName;
+          item.sku = recoveredSku;
         }
       }
     } catch (e) {
-      // Keep item.product as-is on error
+      console.error('Error in enrichItemsWithProducts:', e);
     }
   }
 };
@@ -171,7 +199,15 @@ router.get('/', [
     const customerIds = [...new Set(salesOrders.map(so => so.customer_id).filter(Boolean))];
     const customerMap = {};
     for (const cid of customerIds) {
-      const c = await customerRepository.findById(cid);
+      let c = await customerRepository.findById(cid);
+      if (!c) {
+        // Recovery for deep deleted customers from historical sales
+        const { query } = require('../config/postgres');
+        const rec = await query(`SELECT (customer_info->>'name') as name FROM sales WHERE customer_id = $1 AND customer_info IS NOT NULL LIMIT 1`, [cid]);
+        if (rec.rows[0]) {
+          c = { id: cid, _id: cid, name: rec.rows[0].name, isRecovered: true };
+        }
+      }
       if (c) {
         c.businessName = c.business_name ?? c.businessName;
         c._id = c.id;
@@ -262,17 +298,7 @@ router.post('/', [
   requirePermission('create_sales_orders'),
   body('customer').isUUID(4).withMessage('Valid customer is required'),
   body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
-  body('items').custom((items) => {
-    if (!Array.isArray(items)) return false;
-    for (const item of items) {
-      const hasProduct = typeof item?.product === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(item.product);
-      const hasCustomName = typeof item?.customName === 'string' && item.customName.trim().length > 0;
-      if (!hasProduct && !hasCustomName) {
-        throw new Error('Each item must include a valid product ID or customName');
-      }
-    }
-    return true;
-  }),
+  body('items.*.product').isUUID(4).withMessage('Valid product is required'),
   body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
   body('items.*.unitPrice').isFloat({ min: 0 }).withMessage('Unit price must be positive'),
   body('items.*.totalPrice').isFloat({ min: 0 }).withMessage('Total price must be positive'),
@@ -288,6 +314,11 @@ router.post('/', [
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
+    }
+
+    // Enrich items with product names before saving
+    if (req.body.items && Array.isArray(req.body.items)) {
+      await enrichItemsWithProducts(req.body.items);
     }
 
     const soData = {
@@ -327,17 +358,7 @@ router.put('/:id', [
   body('customer').optional({ checkFalsy: true }).isUUID(4).withMessage('Valid customer is required'),
   body('orderType').optional().isIn(['retail', 'wholesale', 'return', 'exchange']).withMessage('Invalid order type'),
   body('items').optional().isArray({ min: 1 }).withMessage('At least one item is required'),
-  body('items').optional().custom((items) => {
-    if (!Array.isArray(items)) return true;
-    for (const item of items) {
-      const hasProduct = typeof item?.product === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(item.product);
-      const hasCustomName = typeof item?.customName === 'string' && item.customName.trim().length > 0;
-      if (!hasProduct && !hasCustomName) {
-        throw new Error('Each item must include a valid product ID or customName');
-      }
-    }
-    return true;
-  }),
+  body('items.*.product').optional({ checkFalsy: true }).isUUID(4).withMessage('Valid product is required'),
   body('items.*.quantity').optional().custom((v) => (Number.isInteger(Number(v)) && Number(v) >= 1)).withMessage('Quantity must be at least 1'),
   body('items.*.unitPrice').optional().custom((v) => !isNaN(parseFloat(v)) && parseFloat(v) >= 0).withMessage('Unit price must be positive'),
   body('expectedDelivery').optional().isISO8601().withMessage('Valid delivery date required'),
@@ -361,6 +382,11 @@ router.put('/:id', [
       return res.status(400).json({
         message: 'Cannot edit sales order that has been confirmed or invoiced'
       });
+    }
+
+    // Enrich items with product names before saving
+    if (req.body.items && Array.isArray(req.body.items)) {
+      await enrichItemsWithProducts(req.body.items);
     }
 
     const updateData = {
@@ -433,7 +459,6 @@ router.patch('/:id/items-confirmation', [
           items[itemIndex] = { ...items[itemIndex], confirmationStatus, confirmation_status: confirmationStatus };
 
           const productId = items[itemIndex].product || items[itemIndex].product_id;
-          if (!productId || items[itemIndex].isCustom || items[itemIndex].customName) continue;
           const qty = Number(items[itemIndex].quantity) || 0;
           if (!productId || qty <= 0) continue;
 
@@ -558,37 +583,63 @@ router.get('/:id/stock-status', auth, async (req, res) => {
       return res.status(404).json({ message: 'Sales order not found' });
     }
     const items = Array.isArray(salesOrder.items) ? salesOrder.items : (typeof salesOrder.items === 'string' ? JSON.parse(salesOrder.items || '[]') : []);
+    await enrichItemsWithProducts(items);
     const outOfStock = [];
 
     for (const item of items) {
-      const productId = item.product || item.product_id;
-      if (!productId || item.isCustom || item.customName) continue;
-      if (!productId) continue;
+      const productId = (item.product && typeof item.product === 'object') ? (item.product.id || item.product._id) : (item.product || item.product_id);
+      if (!productId || typeof productId !== 'string') continue;
 
       let currentStock = 0;
+      let usedReplacement = false;
+      let replacementId = null;
+
       try {
         const inv = await inventoryRepository.findByProduct(productId);
         if (inv) {
           currentStock = Number(inv.current_stock ?? inv.currentStock ?? 0);
         } else {
-          const product = await productRepository.findById(productId);
+          const product = await productRepository.findById(productId, true);
           if (product) currentStock = Number(product.stock_quantity ?? product.stockQuantity ?? 0);
         }
-      } catch {
+
+        // SMART FALLBACK: If current stock is 0/low, check if there's an active product with the same SKU or name
+        const requestedQty = Number(item.quantity) || 0;
+        if (currentStock < requestedQty) {
+          const productName = (item.product && typeof item.product === 'object' && item.product.name) ? item.product.name : (item.name || item.productName);
+          const productSku = (item.product && typeof item.product === 'object') ? item.product.sku : item.sku;
+
+          if (productSku || productName) {
+            const activeProducts = await productRepository.findAll({ 
+              search: productSku || productName,
+              limit: 5,
+              includeDeleted: false 
+            });
+
+            // Find an exact match that is NOT the same deleted ID
+            const replacement = activeProducts.find(p => {
+              if (p.id === productId) return false;
+              const matchSku = productSku && p.sku && p.sku.trim().toLowerCase() === String(productSku).trim().toLowerCase();
+              const matchName = productName && p.name && p.name.trim().toLowerCase() === String(productName).trim().toLowerCase();
+              return matchSku || matchName;
+            });
+
+            if (replacement && replacement.stockQuantity >= requestedQty) {
+              currentStock = replacement.stockQuantity;
+              usedReplacement = true;
+              replacementId = replacement.id;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Stock status lookup failed for item:', productId, err.message);
         currentStock = 0;
       }
 
       const requestedQty = Number(item.quantity) || 0;
       if (requestedQty > 0 && currentStock < requestedQty) {
-        let productName = 'Unknown';
-        try {
-          let p = await productRepository.findById(productId);
-          if (p) productName = p.name || p.displayName || 'Product';
-          else {
-            p = await productVariantRepository.findById(productId);
-            if (p) productName = (p.display_name ?? p.displayName) || (p.variant_name ?? p.variantName) || 'Variant';
-          }
-        } catch { }
+        const productName = (item.product && typeof item.product === 'object' && item.product.name) ? item.product.name : (item.name || item.productName || 'Unknown');
+        
         outOfStock.push({
           productId,
           productName,
@@ -629,11 +680,61 @@ router.put('/:id/confirm', [
 
     const userId = req.user?.id || req.user?._id;
     const items = Array.isArray(salesOrder.items) ? salesOrder.items : (typeof salesOrder.items === 'string' ? JSON.parse(salesOrder.items || '[]') : []);
+    await enrichItemsWithProducts(items);
 
     const inventoryUpdates = [];
+    const updatedItemsForOrder = [];
+
     for (const item of items) {
-      const productId = item.product || item.product_id;
-      if (!productId || item.isCustom || item.customName) continue;
+      let productId = item.product || item.product_id;
+      const originalProductId = productId;
+      const requestedQty = Number(item.quantity) || 0;
+
+      // Smart Resolution: Check if product exists and has stock
+      let needsReplacement = false;
+      try {
+        const inv = await inventoryRepository.findByProduct(productId);
+        const stock = Number(inv?.current_stock ?? inv?.currentStock ?? 0);
+        if (stock < requestedQty) needsReplacement = true;
+      } catch {
+        needsReplacement = true;
+      }
+
+      if (needsReplacement) {
+        // Try to find a replacement by SKU or Name
+        try {
+          // Get product info (we already enriched above, but let's be sure)
+          const pName = (item.product?.name || item.name || item.productName || '').trim();
+          const pSku = (item.product?.sku || item.sku || '').trim();
+
+          if (pSku || pName) {
+            const activeProducts = await productRepository.findAll({ 
+              search: pSku || pName,
+              limit: 10,
+              includeDeleted: false 
+            });
+
+            const replacement = activeProducts.find(p => {
+              if (p.id === originalProductId) return false;
+              
+              const matchSku = pSku && p.sku && p.sku.trim().toLowerCase() === pSku.toLowerCase();
+              const matchName = pName && p.name && p.name.trim().toLowerCase() === pName.toLowerCase();
+              
+              return matchSku || matchName;
+            });
+
+            if (replacement && replacement.stockQuantity >= requestedQty) {
+              console.log(`Replacing product ${originalProductId} with ${replacement.id} for SO item due to stock availability`);
+              productId = replacement.id;
+              item.product = replacement.id;
+              item.product_id = replacement.id;
+            }
+          }
+        } catch (recoverErr) {
+          console.error('Failed to resolve replacement product:', recoverErr.message);
+        }
+      }
+
       try {
         const inventoryUpdate = await inventoryService.updateStock({
           productId,
@@ -644,11 +745,12 @@ router.put('/:id/confirm', [
           referenceId: salesOrder.id,
           referenceModel: 'SalesOrder',
           performedBy: userId,
-          notes: `Stock reduced due to sales order confirmation - SO: ${salesOrder.so_number || salesOrder.soNumber}`
+          notes: `Stock reduced due to sales order confirmation - SO: ${salesOrder.so_number || salesOrder.soNumber}${productId !== originalProductId ? ` (Resolved from replacement for ${originalProductId})` : ''}`
         });
 
         inventoryUpdates.push({
           productId,
+          originalProductId,
           quantity: item.quantity,
           newStock: inventoryUpdate.currentStock,
           success: true
@@ -663,14 +765,17 @@ router.put('/:id/confirm', [
         });
 
         return res.status(400).json({
-          message: `Insufficient stock for product ${productId}. Cannot confirm sales order.`,
+          message: inventoryError.message.includes('stock') 
+            ? `Insufficient stock for product ${item.product?.name || item.name || productId}. Cannot confirm sales order.`
+            : `Failed to confirm sales order: ${inventoryError.message}`,
           details: inventoryError.message,
           inventoryUpdates
         });
       }
+      updatedItemsForOrder.push(item);
     }
 
-    const itemsWithConfirmed = items.map((i) => ({
+    const itemsWithConfirmed = updatedItemsForOrder.map((i) => ({
       ...i,
       confirmationStatus: 'confirmed',
       confirmation_status: 'confirmed'
@@ -764,7 +869,6 @@ router.put('/:id/cancel', [
     if (salesOrder.status === 'confirmed') {
       for (const item of soItems) {
         const productId = item.product || item.product_id;
-        if (!productId || item.isCustom || item.customName) continue;
         try {
           const inventoryUpdate = await inventoryService.updateStock({
             productId,
@@ -914,778 +1018,14 @@ router.get('/:id/convert', auth, async (req, res) => {
   }
 });
 
-// @route   POST /api/sales-orders/export/excel
-// @desc    Export sales orders to Excel
-// @access  Private
-router.post('/export/excel', [auth, requirePermission('view_sales_orders')], async (req, res) => {
-  try {
-    const { filters = {} } = req.body;
 
-    // Build query based on filters (similar to GET endpoint)
-    const filter = {};
 
-    if (filters.search) {
-      filter.$or = [
-        { soNumber: { $regex: filters.search, $options: 'i' } }
-      ];
-    }
 
-    if (filters.status) {
-      filter.status = filters.status;
-    }
 
-    if (filters.customer) {
-      filter.customer = filters.customer;
-    }
 
-    if (filters.fromDate || filters.toDate) {
-      filter.orderDate = {};
-      if (filters.fromDate) {
-        filter.orderDate.$gte = new Date(filters.fromDate);
-      }
-      if (filters.toDate) {
-        const toDate = new Date(filters.toDate);
-        toDate.setHours(23, 59, 59, 999);
-        filter.orderDate.$lte = toDate;
-      }
-    }
 
-    if (filters.orderNumber) {
-      filter.soNumber = { $regex: filters.orderNumber, $options: 'i' };
-    }
 
-    const salesOrders = await salesOrderRepository.findAll(filter, {
-      populate: [
-        { path: 'customer', select: 'businessName name firstName lastName email phone' },
-        { path: 'createdBy', select: 'firstName lastName email' }
-      ],
-      sort: { createdAt: -1 },
-      lean: true
-    });
 
-    // Get all unique IDs (product or variant) from all orders to fetch their names
-    const allIds = [...new Set(salesOrders.flatMap(o =>
-      Array.isArray(o.items) ? o.items.flatMap(i => [i.productId, i.product_id, i.product, i.variantId, i.variant_id]) : []
-    ))].filter(Boolean);
 
-    const productMap = {};
-    if (allIds.length > 0) {
-      // Fetch names from both products and product_variants tables
-      const [productsData, variantsData] = await Promise.all([
-        productRepository.findAll({ ids: allIds }),
-        pgQuery('SELECT * FROM product_variants WHERE id = ANY($1::uuid[])', [allIds])
-      ]);
-
-      productsData.forEach(p => { 
-        productMap[p.id || p._id] = { name: p.name, image: p.imageUrl || p.image_url }; 
-      });
-
-      const baseProductIds = [];
-      variantsData.rows.forEach(v => { 
-        const inv = typeof v.inventory_data === 'string' ? JSON.parse(v.inventory_data) : v.inventory_data;
-        const prc = typeof v.pricing === 'string' ? JSON.parse(v.pricing) : v.pricing;
-        const vImage = inv?.imageUrl || prc?.imageUrl || v.image_url || v.imageUrl;
-        
-        productMap[v.id] = { 
-          name: v.display_name || v.variant_name, 
-          image: vImage,
-          baseProductId: v.base_product_id
-        }; 
-        if (!vImage && v.base_product_id) baseProductIds.push(v.base_product_id);
-      });
-
-      // Fetch base product images as fallback for variants
-      if (baseProductIds.length > 0) {
-        const baseProducts = await productRepository.findAll({ ids: [...new Set(baseProductIds)] });
-        baseProducts.forEach(b => {
-          const bId = b.id || b._id;
-          const bImage = b.imageUrl || b.image_url;
-          if (bImage) {
-            Object.values(productMap).forEach(entry => {
-              if (entry.baseProductId === bId && !entry.image) {
-                entry.image = bImage;
-              }
-            });
-          }
-        });
-      }
-    }
-
-    // Prepare Excel data
-    const excelData = salesOrders.map(order => {
-      const customerName = order.customer?.businessName ||
-        order.customer?.name ||
-        `${order.customer?.firstName || ''} ${order.customer?.lastName || ''}`.trim() ||
-        'Unknown Customer';
-
-      const itemsSummary = order.items?.map(item => {
-        const pId = item.productId || item.product_id || item.product || item.variantId || item.variant_id;
-        const pName = item.name || item.product_name || productMap[pId] || pId || 'Unknown';
-        return `${pName}: ${item.quantity} x ${item.unitPrice}`;
-      }).join('; ') || 'No items';
-
-      return {
-        'SO Number': order.soNumber || '',
-        'Customer': customerName,
-        'Total': order.total || 0,
-        'Status': order.status || '',
-        'Order Date': order.orderDate ? new Date(order.orderDate).toISOString().split('T')[0] : '',
-        'Notes': order.notes || ''
-      };
-    });
-
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `salesorders-detailed-${timestamp}.xlsx`;
-    const exportsFolder = path.join(__dirname, '../exports');
-    if (!fs.existsSync(exportsFolder)) {
-      fs.mkdirSync(exportsFolder, { recursive: true });
-    }
-    const filePath = path.join(exportsFolder, filename);
-
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('Sales Orders Detailed');
-
-    // Define columns
-    const columns = [
-      { header: 'SO Number', key: 'soNumber', width: 15 },
-      { header: 'Order Date', key: 'orderDate', width: 15 },
-      { header: 'Customer', key: 'customer', width: 25 },
-      { header: 'S.No', key: 'sno', width: 8 },
-      { header: 'Product Name', key: 'pname', width: 35 },
-      { header: 'Product Image', key: 'image', width: 15 },
-      { header: 'Quantity', key: 'qty', width: 10 },
-      { header: 'Price', key: 'price', width: 12 },
-      { header: 'Line Total', key: 'lineTotal', width: 15 },
-      { header: 'Order Total', key: 'total', width: 15 },
-      { header: 'Status', key: 'status', width: 12 },
-      { header: 'Notes', key: 'notes', width: 20 }
-    ];
-    worksheet.columns = columns;
-
-    // Header styling
-    worksheet.getRow(1).font = { bold: true };
-    worksheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
-
-    for (let i = 0; i < excelData.length; i++) {
-        const orderData = excelData[i];
-        const items = Array.isArray(salesOrders[i].items) ? salesOrders[i].items : [];
-
-        if (items.length === 0) {
-            worksheet.addRow({
-                soNumber: orderData['SO Number'],
-                orderDate: orderData['Order Date'],
-                customer: orderData['Customer'],
-                total: orderData['Total'],
-                status: orderData['Status'],
-                notes: orderData['Notes']
-            });
-            continue;
-        }
-
-        for (let j = 0; j < items.length; j++) {
-            const item = items[j];
-            const pId = item.productId || item.product_id || item.product || item.variantId || item.variant_id;
-            const pInfo = productMap[pId] || {};
-            const pName = item.name || item.product_name || pInfo.name || 'Unknown Item';
-            const qty = item.quantity || 0;
-            const price = item.unitPrice || item.unit_price || 0;
-
-            const row = worksheet.addRow({
-                soNumber: orderData['SO Number'],
-                orderDate: orderData['Order Date'],
-                customer: orderData['Customer'],
-                sno: j + 1,
-                pname: pName,
-                qty: qty,
-                price: price,
-                lineTotal: (qty * price).toFixed(2),
-                total: j === 0 ? orderData['Total'] : '',
-                status: orderData['Status'],
-                notes: orderData['Notes']
-            });
-
-            // Add image
-            const imgPath = item.imageUrl || item.image || pInfo.image;
-            if (imgPath) {
-                try {
-                    let imageBuffer = null;
-                    let extension = 'jpeg';
-                    const fileName = imgPath.split('/').pop();
-                    const localFilePath = path.join(__dirname, '../uploads/images/optimized', fileName);
-                    
-                    if (imgPath.startsWith('http')) {
-                        // Fetch remote image
-                        imageBuffer = await new Promise((resolve, reject) => {
-                            const protocol = imgPath.startsWith('https') ? https : http;
-                            protocol.get(imgPath, (res) => {
-                                if (res.statusCode !== 200) return reject();
-                                const chunks = [];
-                                res.on('data', chunk => chunks.push(chunk));
-                                res.on('end', () => resolve(Buffer.concat(chunks)));
-                            }).on('error', reject);
-                        }).catch(() => null);
-                        extension = (fileName.split('.').pop() || 'jpeg').toLowerCase();
-                    } else if (fs.existsSync(localFilePath)) {
-                        // Use local file
-                        imageBuffer = fs.readFileSync(localFilePath);
-                        extension = (fileName.split('.').pop() || 'jpeg').toLowerCase();
-                    }
-
-                    if (imageBuffer) {
-                        const imageId = workbook.addImage({
-                            buffer: imageBuffer,
-                            extension: extension === 'jpg' ? 'jpeg' : extension,
-                        });
-                        
-                        worksheet.addImage(imageId, {
-                            tl: { col: 5, row: row.number - 1 + 0.1 },
-                            ext: { width: 50, height: 50 },
-                            editAs: 'oneCell'
-                        });
-                        row.height = 45;
-                    }
-                } catch (err) {
-                    console.error('Failed to add excel image:', err);
-                }
-            }
-            
-            row.alignment = { vertical: 'middle', horizontal: 'left' };
-        }
-    }
-
-    await workbook.xlsx.writeFile(filePath);
-    res.json({
-      message: 'Sales orders exported successfully',
-      filename: filename,
-      recordCount: excelData.length,
-      downloadUrl: `/api/sales-orders/download/${filename}`
-    });
-
-  } catch (error) {
-    console.error('Excel export error:', error);
-    console.error('Error stack:', error.stack);
-    res.status(500).json({
-      message: 'Export failed',
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-// @route   POST /api/sales-orders/export/csv
-// @desc    Export sales orders to CSV
-// @access  Private
-router.post('/export/csv', [auth, requirePermission('view_sales_orders')], async (req, res) => {
-  try {
-    const { filters = {} } = req.body;
-
-    // Build query based on filters (same as Excel export)
-    const filter = {};
-
-    if (filters.search) {
-      filter.$or = [
-        { soNumber: { $regex: filters.search, $options: 'i' } }
-      ];
-    }
-
-    if (filters.status) {
-      filter.status = filters.status;
-    }
-
-    if (filters.customer) {
-      filter.customer = filters.customer;
-    }
-
-    if (filters.fromDate || filters.toDate) {
-      filter.orderDate = {};
-      if (filters.fromDate) {
-        filter.orderDate.$gte = new Date(filters.fromDate);
-      }
-      if (filters.toDate) {
-        const toDate = new Date(filters.toDate);
-        toDate.setHours(23, 59, 59, 999);
-        filter.orderDate.$lte = toDate;
-      }
-    }
-
-    if (filters.orderNumber) {
-      filter.soNumber = { $regex: filters.orderNumber, $options: 'i' };
-    }
-
-    const salesOrders = await salesOrderRepository.findAll(filter, {
-      populate: [
-        { path: 'customer', select: 'businessName name firstName lastName email phone' },
-        { path: 'items.product', select: 'name' },
-        { path: 'createdBy', select: 'firstName lastName email' }
-      ],
-      sort: { createdAt: -1 },
-      lean: true
-    });
-
-    // Prepare CSV data
-    const csvData = salesOrders.map(order => {
-      const customerName = order.customer?.businessName ||
-        order.customer?.name ||
-        `${order.customer?.firstName || ''} ${order.customer?.lastName || ''}`.trim() ||
-        'Unknown Customer';
-
-      const itemsSummary = order.items?.map(item =>
-        `${item.product?.name || 'Unknown'}: ${item.quantity} x $${item.unitPrice}`
-      ).join('; ') || 'No items';
-
-      return {
-        'SO Number': order.soNumber || '',
-        'Customer': customerName,
-        'Customer Email': order.customer?.email || '',
-        'Customer Phone': order.customer?.phone || '',
-        'Status': order.status || '',
-        'Order Date': order.orderDate ? new Date(order.orderDate).toISOString().split('T')[0] : '',
-        'Expected Delivery': order.expectedDelivery ? new Date(order.expectedDelivery).toISOString().split('T')[0] : '',
-        'Confirmed Date': order.confirmedDate ? new Date(order.confirmedDate).toISOString().split('T')[0] : '',
-        'Subtotal': order.subtotal || 0,
-        'Tax': order.tax || 0,
-        'Total': order.total || 0,
-        'Items Count': order.items?.length || 0,
-        'Items Summary': itemsSummary,
-        'Notes': order.notes || '',
-        'Terms': order.terms || '',
-        'Created By': order.createdBy ? `${order.createdBy.firstName || ''} ${order.createdBy.lastName || ''}`.trim() : '',
-        'Created Date': order.createdAt ? new Date(order.createdAt).toISOString().split('T')[0] : ''
-      };
-    });
-
-    // Convert to CSV
-    const createCsvWriter = require('csv-writer').createObjectCsvWriter;
-
-    // Ensure exports directory exists
-    const exportsDir = path.join(__dirname, '../exports');
-    if (!fs.existsSync(exportsDir)) {
-      fs.mkdirSync(exportsDir, { recursive: true });
-    }
-
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
-    const filename = `sales_orders_${timestamp}.csv`;
-    const filepath = path.join(exportsDir, filename);
-
-    const csvWriter = createCsvWriter({
-      path: filepath,
-      header: [
-        { id: 'SO Number', title: 'SO Number' },
-        { id: 'Customer', title: 'Customer' },
-        { id: 'Customer Email', title: 'Customer Email' },
-        { id: 'Customer Phone', title: 'Customer Phone' },
-        { id: 'Status', title: 'Status' },
-        { id: 'Order Date', title: 'Order Date' },
-        { id: 'Expected Delivery', title: 'Expected Delivery' },
-        { id: 'Confirmed Date', title: 'Confirmed Date' },
-        { id: 'Subtotal', title: 'Subtotal' },
-        { id: 'Tax', title: 'Tax' },
-        { id: 'Total', title: 'Total' },
-        { id: 'Items Count', title: 'Items Count' },
-        { id: 'Items Summary', title: 'Items Summary' },
-        { id: 'Notes', title: 'Notes' },
-        { id: 'Terms', title: 'Terms' },
-        { id: 'Created By', title: 'Created By' },
-        { id: 'Created Date', title: 'Created Date' }
-      ]
-    });
-
-    await csvWriter.writeRecords(csvData);
-
-    res.json({
-      message: 'Sales orders exported successfully',
-      filename: filename,
-      recordCount: csvData.length,
-      downloadUrl: `/api/sales-orders/download/${filename}`
-    });
-
-  } catch (error) {
-    console.error('CSV export error:', error);
-    res.status(500).json({ message: 'Export failed', error: error.message });
-  }
-});
-
-// @route   POST /api/sales-orders/export/pdf
-// @desc    Export sales orders to PDF
-// @access  Private
-router.post('/export/pdf', [auth, requirePermission('view_sales_orders')], async (req, res) => {
-  try {
-    const { filters = {} } = req.body;
-
-    // Build query based on filters (same as Excel export)
-    const filter = {};
-
-    if (filters.search) {
-      filter.$or = [
-        { soNumber: { $regex: filters.search, $options: 'i' } }
-      ];
-    }
-
-    if (filters.status) {
-      filter.status = filters.status;
-    }
-
-    if (filters.customer) {
-      filter.customer = filters.customer;
-    }
-
-    if (filters.fromDate || filters.toDate) {
-      filter.orderDate = {};
-      if (filters.fromDate) {
-        filter.orderDate.$gte = new Date(filters.fromDate);
-      }
-      if (filters.toDate) {
-        const toDate = new Date(filters.toDate);
-        toDate.setHours(23, 59, 59, 999);
-        filter.orderDate.$lte = toDate;
-      }
-    }
-
-    if (filters.orderNumber) {
-      filter.soNumber = { $regex: filters.orderNumber, $options: 'i' };
-    }
-
-    const salesOrders = await salesOrderRepository.findAll(filter, {
-      populate: [
-        { path: 'customer', select: 'businessName name firstName lastName email phone' },
-        { path: 'items.product', select: 'name' },
-        { path: 'createdBy', select: 'firstName lastName email' }
-      ],
-      sort: { createdAt: -1 },
-      lean: true
-    });
-
-    // Ensure exports directory exists
-    const exportsDir = path.join(__dirname, '../exports');
-    if (!fs.existsSync(exportsDir)) {
-      fs.mkdirSync(exportsDir, { recursive: true });
-    }
-
-    // Generate filename
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
-    const filename = `sales_orders_${timestamp}.pdf`;
-    const filepath = path.join(exportsDir, filename);
-
-    // Create PDF document
-    const doc = new PDFDocument({ margin: 50, size: 'LETTER' });
-    const stream = fs.createWriteStream(filepath);
-    doc.pipe(stream);
-
-    // Helper function to format currency
-    const formatCurrency = (amount) => {
-      return `$${Number(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    };
-
-    // Helper function to format date
-    const formatDate = (date) => {
-      if (!date) return 'N/A';
-      return new Date(date).toLocaleDateString('en-US', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric'
-      });
-    };
-
-    // Header
-    doc.fontSize(20).font('Helvetica-Bold').text('SALES ORDERS REPORT', { align: 'center' });
-    doc.moveDown(0.5);
-
-    // Report date range
-    if (filters.fromDate || filters.toDate) {
-      const dateRange = `Period: ${filters.fromDate ? formatDate(filters.fromDate) : 'All'} - ${filters.toDate ? formatDate(filters.toDate) : 'All'}`;
-      doc.fontSize(12).font('Helvetica').text(dateRange, { align: 'center' });
-    } else {
-      doc.fontSize(12).font('Helvetica').text(`Generated on: ${formatDate(new Date())}`, { align: 'center' });
-    }
-
-    doc.moveDown(1);
-
-    // Summary section
-    const totalOrders = salesOrders.length;
-    const totalAmount = salesOrders.reduce((sum, order) => sum + (order.total || 0), 0);
-    const statusCounts = {};
-    salesOrders.forEach(order => {
-      statusCounts[order.status] = (statusCounts[order.status] || 0) + 1;
-    });
-
-    doc.fontSize(11).font('Helvetica-Bold').text('Summary', { underline: true });
-    doc.moveDown(0.3);
-    doc.fontSize(10).font('Helvetica').text(`Total Orders: ${totalOrders}`);
-    doc.text(`Total Amount: ${formatCurrency(totalAmount)}`);
-
-    if (Object.keys(statusCounts).length > 0) {
-      doc.moveDown(0.3);
-      doc.fontSize(10).font('Helvetica-Bold').text('Status Breakdown:');
-      Object.entries(statusCounts).forEach(([status, count]) => {
-        doc.fontSize(10).font('Helvetica').text(`  ${status.charAt(0).toUpperCase() + status.slice(1).replace(/_/g, ' ')}: ${count}`, { indent: 20 });
-      });
-    }
-
-    doc.moveDown(1.5);
-
-    // Table setup
-    const tableTop = doc.y;
-    const leftMargin = 50;
-    const pageWidth = 550;
-    const colWidths = {
-      soNumber: 80,
-      customer: 150,
-      date: 80,
-      status: 70,
-      total: 80,
-      items: 90
-    };
-
-    // Table headers
-    doc.fontSize(10).font('Helvetica-Bold');
-    let xPos = leftMargin;
-    doc.text('SO #', xPos, tableTop);
-    xPos += colWidths.soNumber;
-    doc.text('Customer', xPos, tableTop);
-    xPos += colWidths.customer;
-    doc.text('Date', xPos, tableTop);
-    xPos += colWidths.date;
-    doc.text('Status', xPos, tableTop);
-    xPos += colWidths.status;
-    doc.text('Total', xPos, tableTop);
-    xPos += colWidths.total;
-    doc.text('Items', xPos, tableTop);
-
-    // Draw header line
-    doc.moveTo(leftMargin, tableTop + 15).lineTo(pageWidth, tableTop + 15).stroke();
-
-    let currentY = tableTop + 25;
-    const rowHeight = 20;
-    const pageHeight = 750;
-
-    // Table rows
-    salesOrders.forEach((order, index) => {
-      // Check if we need a new page
-      if (currentY > pageHeight - 50) {
-        doc.addPage();
-        currentY = 50;
-
-        // Redraw headers on new page
-        doc.fontSize(10).font('Helvetica-Bold');
-        xPos = leftMargin;
-        doc.text('SO #', xPos, currentY);
-        xPos += colWidths.soNumber;
-        doc.text('Customer', xPos, currentY);
-        xPos += colWidths.customer;
-        doc.text('Date', xPos, currentY);
-        xPos += colWidths.date;
-        doc.text('Status', xPos, currentY);
-        xPos += colWidths.status;
-        doc.text('Total', xPos, currentY);
-        xPos += colWidths.total;
-        doc.text('Items', xPos, currentY);
-
-        doc.moveTo(leftMargin, currentY + 15).lineTo(pageWidth, currentY + 15).stroke();
-        currentY += 25;
-      }
-
-      const customerName = order.customer?.businessName ||
-        order.customer?.name ||
-        `${order.customer?.firstName || ''} ${order.customer?.lastName || ''}`.trim() ||
-        'Unknown Customer';
-
-      const statusText = order.status ? order.status.charAt(0).toUpperCase() + order.status.slice(1).replace(/_/g, ' ') : 'N/A';
-      const itemsCount = order.items?.length || 0;
-
-      doc.fontSize(9).font('Helvetica');
-      xPos = leftMargin;
-      doc.text(order.soNumber || 'N/A', xPos, currentY, { width: colWidths.soNumber });
-      xPos += colWidths.soNumber;
-      doc.text(customerName.substring(0, 25), xPos, currentY, { width: colWidths.customer });
-      xPos += colWidths.customer;
-      doc.text(formatDate(order.orderDate), xPos, currentY, { width: colWidths.date });
-      xPos += colWidths.date;
-      doc.text(statusText, xPos, currentY, { width: colWidths.status });
-      xPos += colWidths.status;
-      doc.text(formatCurrency(order.total), xPos, currentY, { width: colWidths.total, align: 'right' });
-      xPos += colWidths.total;
-      doc.text(itemsCount.toString(), xPos, currentY, { width: colWidths.items, align: 'right' });
-
-      // Draw row line
-      doc.moveTo(leftMargin, currentY + 12).lineTo(pageWidth, currentY + 12).stroke({ color: '#cccccc', width: 0.5 });
-
-      currentY += rowHeight;
-    });
-
-    // Footer
-    currentY += 20;
-    if (currentY > pageHeight - 50) {
-      doc.addPage();
-      currentY = 50;
-    }
-
-    doc.moveDown(2);
-    doc.fontSize(9).font('Helvetica').text(`Total Orders: ${totalOrders} | Total Amount: ${formatCurrency(totalAmount)}`, { align: 'center' });
-    doc.moveDown(0.5);
-    doc.text(`Generated on: ${formatDate(new Date())}`, { align: 'center' });
-
-    if (req.user) {
-      doc.moveDown(0.3);
-      doc.text(`Generated by: ${req.user.firstName || ''} ${req.user.lastName || ''}`.trim(), { align: 'center' });
-    }
-
-    // Finalize PDF
-    doc.end();
-
-    // Wait for stream to finish
-    await new Promise((resolve, reject) => {
-      stream.on('finish', () => {
-        resolve();
-      });
-      stream.on('error', reject);
-    });
-
-    res.json({
-      message: 'Sales orders exported successfully',
-      filename: filename,
-      recordCount: salesOrders.length,
-      downloadUrl: `/api/sales-orders/download/${filename}`
-    });
-
-  } catch (error) {
-    console.error('PDF export error:', error);
-    res.status(500).json({ message: 'Export failed', error: error.message });
-  }
-});
-
-// @route   POST /api/sales-orders/export/json
-// @desc    Export sales orders to JSON
-// @access  Private
-router.post('/export/json', [auth, requirePermission('view_sales_orders')], async (req, res) => {
-  try {
-    const { filters = {} } = req.body;
-
-    // Build query based on filters (same as Excel export)
-    const filter = {};
-
-    if (filters.search) {
-      filter.$or = [
-        { soNumber: { $regex: filters.search, $options: 'i' } }
-      ];
-    }
-
-    if (filters.status) {
-      filter.status = filters.status;
-    }
-
-    if (filters.customer) {
-      filter.customer = filters.customer;
-    }
-
-    if (filters.fromDate || filters.toDate) {
-      filter.orderDate = {};
-      if (filters.fromDate) {
-        filter.orderDate.$gte = new Date(filters.fromDate);
-      }
-      if (filters.toDate) {
-        const toDate = new Date(filters.toDate);
-        toDate.setHours(23, 59, 59, 999);
-        filter.orderDate.$lte = toDate;
-      }
-    }
-
-    if (filters.orderNumber) {
-      filter.soNumber = { $regex: filters.orderNumber, $options: 'i' };
-    }
-
-    const salesOrders = await salesOrderRepository.findAll(filter, {
-      populate: [
-        { path: 'customer', select: 'businessName name firstName lastName email phone' },
-        { path: 'items.product', select: 'name' },
-        { path: 'createdBy', select: 'firstName lastName email' }
-      ],
-      sort: { createdAt: -1 },
-      lean: true
-    });
-
-    // Ensure exports directory exists
-    const exportsDir = path.join(__dirname, '../exports');
-    if (!fs.existsSync(exportsDir)) {
-      fs.mkdirSync(exportsDir, { recursive: true });
-    }
-
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
-    const filename = `sales_orders_${timestamp}.json`;
-    const filepath = path.join(exportsDir, filename);
-
-    // Write JSON file
-    fs.writeFileSync(filepath, JSON.stringify(salesOrders, null, 2), 'utf8');
-
-    res.json({
-      message: 'Sales orders exported successfully',
-      filename: filename,
-      recordCount: salesOrders.length,
-      downloadUrl: `/api/sales-orders/download/${filename}`
-    });
-
-  } catch (error) {
-    console.error('JSON export error:', error);
-    res.status(500).json({ message: 'Export failed', error: error.message });
-  }
-});
-
-// @route   GET /api/sales-orders/download/:filename
-// @desc    Download exported file
-// @access  Private
-router.get('/download/:filename', [auth, requirePermission('view_sales_orders')], (req, res) => {
-  try {
-    const filename = req.params.filename;
-    const exportsDir = path.join(__dirname, '../exports');
-    const filepath = path.join(exportsDir, filename);
-
-
-    if (!fs.existsSync(filepath)) {
-      console.error('File not found:', filepath);
-      return res.status(404).json({ message: 'File not found', filename, filepath });
-    }
-
-    // Set appropriate content type based on file extension
-    const ext = path.extname(filename).toLowerCase();
-    let contentType = 'application/octet-stream';
-    let disposition = 'attachment'; // Default to download
-
-    if (ext === '.csv') {
-      contentType = 'text/csv';
-    } else if (ext === '.json') {
-      contentType = 'application/json';
-    } else if (ext === '.pdf') {
-      contentType = 'application/pdf';
-      // For PDF, check if inline viewing is requested
-      if (req.query.view === 'inline' || req.headers.accept?.includes('application/pdf')) {
-        disposition = 'inline';
-      }
-    } else if (ext === '.xlsx' || ext === '.xls') {
-      contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-    }
-
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
-
-    // For PDF inline viewing, also set these headers
-    if (ext === '.pdf' && disposition === 'inline') {
-      res.setHeader('Content-Length', fs.statSync(filepath).size);
-    }
-
-    const fileStream = fs.createReadStream(filepath);
-    fileStream.pipe(res);
-
-    fileStream.on('error', (err) => {
-      console.error('File stream error:', err);
-      if (!res.headersSent) {
-        res.status(500).json({ message: 'Download failed' });
-      }
-    });
-  } catch (error) {
-    console.error('Download error:', error);
-    if (!res.headersSent) {
-      res.status(500).json({ message: 'Download failed' });
-    }
-  }
-});
 
 module.exports = router;

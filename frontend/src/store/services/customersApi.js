@@ -139,50 +139,17 @@ export const customersApi = api.injectEndpoints({
       }),
       providesTags: [{ type: 'Customers', id: 'BY_CITIES' }],
     }),
-    exportExcel: builder.mutation({
-      query: (params) => ({
-        url: 'customers/export/excel',
+    bulkCreateCustomers: builder.mutation({
+      query: (customers) => ({
+        url: 'customers/bulk-create',
         method: 'post',
-        data: params,
+        data: { customers },
       }),
-    }),
-    downloadExportFile: builder.query({
-      query: (filename) => ({
-        url: `customers/download/${filename}`,
-        method: 'get',
-        responseType: 'blob',
-      }),
-      providesTags: [{ type: 'Customers', id: 'EXPORT' }],
-    }),
-    importExcel: builder.mutation({
-      query: (file) => {
-        const formData = new FormData();
-        formData.append('file', file);
-        return {
-          url: 'customers/import/excel',
-          method: 'post',
-          data: formData,
-        };
-      },
       invalidatesTags: [
         { type: 'Customers', id: 'LIST' },
-        { type: 'Customers', id: 'BY_CITIES' },
         { type: 'Customers', id: 'SEARCH' },
-        { type: 'Customers', id: 'CHECK' },
-        { type: 'Accounting' },
         { type: 'Reports', id: 'CUSTOMER_REPORT' },
-        { type: 'Reports', id: 'CUSTOMER_ANALYTICS' },
-        { type: 'Reports', id: 'CUSTOMER_ANALYTICS_SUMMARY' },
-        { type: 'Reports', id: 'PARTY_BALANCE' },
       ],
-    }),
-    downloadTemplate: builder.query({
-      query: () => ({
-        url: 'customers/template/excel',
-        method: 'get',
-        responseType: 'blob',
-      }),
-      providesTags: [{ type: 'Customers', id: 'TEMPLATE' }],
     }),
   }),
   overrideExisting: false,
@@ -203,10 +170,5 @@ export const {
   useCitiesQuery,
   useGetCustomersByCitiesQuery,
   useLazyGetCustomersByCitiesQuery,
-  useExportExcelMutation,
-  useImportExcelMutation,
-  useDownloadTemplateQuery,
-  useLazyDownloadTemplateQuery,
-  useLazyDownloadExportFileQuery,
+  useBulkCreateCustomersMutation,
 } = customersApi;
-

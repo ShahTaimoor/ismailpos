@@ -40,7 +40,7 @@ import {
   useResetPasswordMutation,
   useUpdateRolePermissionsMutation,
 } from '../store/services/usersApi';
-import { navigation } from '../components/MultiTabLayout';
+import { navigation, loadSidebarConfig } from '../components/MultiTabLayout';
 import { useChangePasswordMutation } from '../store/services/authApi';
 import { LoadingSpinner, LoadingButton } from '../components/LoadingSpinner';
 import PrintDocument from '../components/PrintDocument';
@@ -125,7 +125,7 @@ export const Settings2 = () => {
   });
 
   const sampleOrderData = useMemo(() => ({
-    invoiceNumber: 'KDPI2403001 (S001 )',
+    invoiceNumber: 'INV-PREVIEW',
     createdAt: new Date(),
     customer: {
       name: 'Walk-in Customer',
@@ -285,7 +285,7 @@ export const Settings2 = () => {
         // Inventory Operations - Granular
         { key: 'generate_purchase_orders', name: 'Generate Purchase Orders' },
         { key: 'acknowledge_inventory_alerts', name: 'Acknowledge Inventory Alerts' },
-        { key: 'export_inventory_reports', name: 'Export Inventory Reports' },
+
         { key: 'import_inventory_data', name: 'Import Inventory Data' }
       ]
     },
@@ -350,7 +350,7 @@ export const Settings2 = () => {
         { key: 'view_anomaly_detection', name: 'Anomaly Detection & Fraud Prevention' },
         { key: 'view_recommendations', name: 'View Recommendations' },
         // Reports & Analytics - Granular
-        { key: 'export_reports', name: 'Export Reports' },
+
         { key: 'share_reports', name: 'Share Reports' },
         { key: 'schedule_reports', name: 'Schedule Reports' },
         { key: 'view_advanced_analytics', name: 'View Advanced Analytics' }
@@ -379,26 +379,10 @@ export const Settings2 = () => {
             { key: 'security_settings', name: 'Security Settings' }
           ]
         },
-        {
-          key: 'view_backups',
-          name: 'View Backups',
-          subcategories: [
-            { key: 'view_backup_list', name: 'Backup List' },
-            { key: 'view_backup_logs', name: 'Backup Logs' }
-          ]
-        },
-        {
-          key: 'manage_backups',
-          name: 'Manage Backups',
-          subcategories: [
-            { key: 'create_backups', name: 'Create Backups' },
-            { key: 'restore_backups', name: 'Restore Backups' },
-            { key: 'delete_backups', name: 'Delete Backups' }
-          ]
-        },
+
         // System Operations
         { key: 'view_audit_logs', name: 'View Audit Logs' },
-        { key: 'export_data', name: 'Export Data' },
+
         { key: 'import_data', name: 'Import Data' },
         { key: 'manage_integrations', name: 'Manage Integrations' },
         { key: 'configure_notifications', name: 'Configure Notifications' }
@@ -534,7 +518,7 @@ export const Settings2 = () => {
       view_pl_statements: true, view_balance_sheets: true, view_sales_performance: true,
       view_inventory_reports: true, view_general_reports: true, view_backdate_report: true,
       view_customer_analytics: true, view_anomaly_detection: true,
-      export_reports: true, share_reports: true, schedule_reports: true, view_advanced_analytics: true,
+      share_reports: true, schedule_reports: true, view_advanced_analytics: true,
       // Financial Operations
       view_cash_receipts: true, create_cash_receipts: true, edit_cash_receipts: true, delete_cash_receipts: true,
       view_cash_payments: true, create_cash_payments: true, edit_cash_payments: true, delete_cash_payments: true,
@@ -552,7 +536,7 @@ export const Settings2 = () => {
       apply_discounts: true, override_prices: true,
       // Inventory Operations - Granular
       generate_purchase_orders: true, acknowledge_inventory_alerts: true,
-      export_inventory_reports: true, import_inventory_data: true,
+      import_inventory_data: true,
       // Accounting
       view_accounting_transactions: true, view_accounting_accounts: true, view_trial_balance: true,
       update_balance_sheet: true, view_chart_of_accounts: true, view_accounting_summary: true,
@@ -564,11 +548,10 @@ export const Settings2 = () => {
       // Investor Management
       view_investors: true, manage_investors: true, create_investors: true, edit_investors: true, payout_investors: true,
       // Administration
-      manage_users: true, manage_settings: true, view_backups: true, manage_backups: true,
+      manage_users: true, manage_settings: true,
       create_users: true, edit_users: true, delete_users: true, assign_roles: true,
       company_settings: true, system_settings: true, print_settings: true, security_settings: true,
-      view_backup_list: true, view_backup_logs: true, create_backups: true, restore_backups: true, delete_backups: true,
-      view_audit_logs: true, export_data: true, import_data: true,
+      view_audit_logs: true, import_data: true,
       manage_integrations: true, configure_notifications: true
     },
     manager: {
@@ -601,7 +584,7 @@ export const Settings2 = () => {
       view_pl_statements: true, view_balance_sheets: true, view_sales_performance: true,
       view_inventory_reports: true, view_general_reports: true, view_backdate_report: true,
       view_customer_analytics: true, view_anomaly_detection: true,
-      export_reports: true, share_reports: true, schedule_reports: true, view_advanced_analytics: true,
+      share_reports: true, schedule_reports: true, view_advanced_analytics: true,
       // Financial Operations
       view_cash_receipts: true, create_cash_receipts: true, edit_cash_receipts: true, delete_cash_receipts: true,
       view_cash_payments: true, create_cash_payments: true, edit_cash_payments: true, delete_cash_payments: true,
@@ -619,7 +602,7 @@ export const Settings2 = () => {
       apply_discounts: true, override_prices: true,
       // Inventory Operations - Granular
       generate_purchase_orders: true, acknowledge_inventory_alerts: true,
-      export_inventory_reports: true, import_inventory_data: true,
+      import_inventory_data: true,
       // Accounting
       view_accounting_transactions: true, view_accounting_accounts: true, view_trial_balance: true,
       update_balance_sheet: true, view_chart_of_accounts: true, view_accounting_summary: true,
@@ -1268,11 +1251,8 @@ export const Settings2 = () => {
     setShowActivityModal(true);
   };
 
-  // Sidebar Configuration State
-  const [sidebarConfig, setSidebarConfig] = useState(() => {
-    const saved = localStorage.getItem('sidebarConfig');
-    return saved ? JSON.parse(saved) : {};
-  });
+  // Sidebar Configuration State (per-link keys match MultiTabLayout / Layout SidebarItem)
+  const [sidebarConfig, setSidebarConfig] = useState(() => loadSidebarConfig());
 
   // Load company settings on component mount
   useEffect(() => {
@@ -1286,6 +1266,11 @@ export const Settings2 = () => {
 
   const [showProductImagesUI, setShowProductImagesUI] = useState(() => {
     const saved = localStorage.getItem('showProductImagesUI');
+    return saved === null ? true : saved === 'true';
+  });
+
+  const [showProductHsCodeColumn, setShowProductHsCodeColumn] = useState(() => {
+    const saved = localStorage.getItem('showProductHsCodeColumn');
     return saved === null ? true : saved === 'true';
   });
 
@@ -2432,6 +2417,25 @@ export const Settings2 = () => {
                 <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
                   <input
                     type="checkbox"
+                    checked={showProductHsCodeColumn}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setShowProductHsCodeColumn(checked);
+                      localStorage.setItem('showProductHsCodeColumn', String(checked));
+                      toast.success(`HS Code column ${checked ? 'shown' : 'hidden'} on Products list`);
+                      window.dispatchEvent(new Event('productHsCodeColumnConfigChanged'));
+                    }}
+                    className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                  />
+                  <div>
+                    <div className="text-sm font-medium text-gray-900">Show HS Code Column on Products</div>
+                    <div className="text-xs text-gray-500">Show or hide HS code on the Products list, mobile cards, and add/edit product modal</div>
+                  </div>
+                </label>
+
+                <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
+                  <input
+                    type="checkbox"
                     checked={accountLedgerShowReturn}
                     onChange={(e) => {
                       const checked = e.target.checked;
@@ -2463,7 +2467,7 @@ export const Settings2 = () => {
                 <h2 className="text-lg font-semibold">Sidebar Configuration</h2>
               </div>
               <p className="text-sm text-gray-600 mt-1">
-                Choose which items you want to see in the left sidebar
+                For each section (Sales, Purchase, etc.), choose which individual pages appear in the sidebar. Top-level items like Dashboard use a single toggle.
               </p>
             </div>
             <div className="card-content">
@@ -2486,27 +2490,76 @@ export const Settings2 = () => {
                       {section.heading.name}
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {section.items.map(item => (
-                        <div key={item.name} className="flex items-center space-x-3 p-3 hover:bg-gray-50 rounded-lg border border-gray-100 transition-colors">
-                          <input
-                            type="checkbox"
-                            id={`sidebar-${item.name}`}
-                            checked={sidebarConfig[item.name] !== false}
-                            onChange={(e) => {
-                              const newConfig = { ...sidebarConfig, [item.name]: e.target.checked };
-                              setSidebarConfig(newConfig);
-                              localStorage.setItem('sidebarConfig', JSON.stringify(newConfig));
-                              toast.success(`${item.name} ${e.target.checked ? 'shown' : 'hidden'} in sidebar`);
-                              window.dispatchEvent(new Event('sidebarConfigChanged'));
-                            }}
-                            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded cursor-pointer"
-                          />
-                          <label htmlFor={`sidebar-${item.name}`} className="text-sm font-medium text-gray-700 cursor-pointer flex-1 flex items-center">
-                            {item.icon && <item.icon className="h-4 w-4 mr-2 text-gray-400" />}
-                            {item.name}
-                          </label>
-                        </div>
-                      ))}
+                      {section.items.map((item) => {
+                        const hasChildren = item.children && item.children.length > 0;
+                        if (hasChildren) {
+                          return (
+                            <div
+                              key={item.name}
+                              className="col-span-1 md:col-span-2 lg:col-span-3 rounded-lg border border-gray-200 bg-gray-50/80 p-4 space-y-3"
+                            >
+                              <div className="flex items-center gap-2 text-sm font-semibold text-gray-800">
+                                {item.icon && <item.icon className="h-4 w-4 text-gray-500 flex-shrink-0" />}
+                                <span>{item.name}</span>
+                                <span className="text-xs font-normal text-gray-500">— each link below</span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                                {item.children.map((child) => (
+                                  <div
+                                    key={child.name}
+                                    className="flex items-center space-x-3 p-2.5 bg-white rounded-md border border-gray-100 hover:bg-gray-50 transition-colors"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      id={`sidebar-${section.heading.name}-${item.name}-${child.name}`.replace(/\s+/g, '-')}
+                                      checked={sidebarConfig[child.name] !== false}
+                                      onChange={(e) => {
+                                        const newConfig = { ...sidebarConfig, [child.name]: e.target.checked };
+                                        setSidebarConfig(newConfig);
+                                        localStorage.setItem('sidebarConfig', JSON.stringify(newConfig));
+                                        toast.success(`${child.name} ${e.target.checked ? 'shown' : 'hidden'} in sidebar`);
+                                        window.dispatchEvent(new Event('sidebarConfigChanged'));
+                                      }}
+                                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded cursor-pointer flex-shrink-0"
+                                    />
+                                    <label
+                                      htmlFor={`sidebar-${section.heading.name}-${item.name}-${child.name}`.replace(/\s+/g, '-')}
+                                      className="text-sm font-medium text-gray-700 cursor-pointer flex-1 flex items-center min-w-0"
+                                    >
+                                      {child.icon && <child.icon className="h-4 w-4 mr-2 text-gray-400 flex-shrink-0" />}
+                                      <span className="truncate">{child.name}</span>
+                                    </label>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        }
+                        return (
+                          <div
+                            key={item.name}
+                            className="flex items-center space-x-3 p-3 hover:bg-gray-50 rounded-lg border border-gray-100 transition-colors"
+                          >
+                            <input
+                              type="checkbox"
+                              id={`sidebar-${item.name}`}
+                              checked={sidebarConfig[item.name] !== false}
+                              onChange={(e) => {
+                                const newConfig = { ...sidebarConfig, [item.name]: e.target.checked };
+                                setSidebarConfig(newConfig);
+                                localStorage.setItem('sidebarConfig', JSON.stringify(newConfig));
+                                toast.success(`${item.name} ${e.target.checked ? 'shown' : 'hidden'} in sidebar`);
+                                window.dispatchEvent(new Event('sidebarConfigChanged'));
+                              }}
+                              className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded cursor-pointer"
+                            />
+                            <label htmlFor={`sidebar-${item.name}`} className="text-sm font-medium text-gray-700 cursor-pointer flex-1 flex items-center">
+                              {item.icon && <item.icon className="h-4 w-4 mr-2 text-gray-400" />}
+                              {item.name}
+                            </label>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -2518,7 +2571,7 @@ export const Settings2 = () => {
                   <div>
                     <h4 className="text-sm font-semibold text-blue-900">Pro Tip</h4>
                     <p className="text-xs text-blue-800 mt-1">
-                      Unchecking an item only hides it from the sidebar menu. You can still access these pages directly via links or URL if you have the required permissions.
+                      Unchecking hides that link from the sidebar; grouped sections (Sales, Purchase, …) stay as headers if at least one child link stays visible. You can still open a hidden page by URL if your role allows.
                     </p>
                   </div>
                 </div>

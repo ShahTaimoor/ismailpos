@@ -1,9 +1,5 @@
 const express = require('express');
 const { body, validationResult, query } = require('express-validator');
-const multer = require('multer');
-const csv = require('csv-parser');
-const createCsvWriter = require('csv-writer').createObjectCsvWriter;
-const XLSX = require('xlsx');
 const fs = require('fs');
 const path = require('path');
 const { auth, requirePermission } = require('../middleware/auth');
@@ -52,26 +48,8 @@ const applyOpeningBalance = (customer, openingBalance) => {
   customer.currentBalance = customer.pendingBalance - (customer.advanceBalance || 0);
 };
 
-// Configure multer for file uploads
-const upload = multer({
-  dest: 'uploads/',
-  fileFilter: (req, file, cb) => {
-    const allowedMimes = [
-      'text/csv',
-      'application/vnd.ms-excel',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    ];
-    
-    if (allowedMimes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Only CSV and Excel files are allowed.'), false);
-    }
-  },
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
-  }
-});
+
+
 
 // @route   GET /api/customers
 // @desc    Get all customers with filtering and pagination
@@ -645,360 +623,10 @@ router.put('/:id/balance', [
   }
 });
 
-// @route   POST /api/customers/import/excel
-// @desc    Import customers from Excel
-// @access  Private
-router.post('/import/excel', [
-  auth,
-  requirePermission('create_customers'),
-  upload.single('file')
-], async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ message: 'No file uploaded' });
-    }
-    
-    const results = {
-      total: 0,
-      success: 0,
-      errors: []
-    };
-    
-    // Read Excel file
-    const workbook = XLSX.readFile(req.file.path);
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-    const customers = XLSX.utils.sheet_to_json(worksheet);
-    
-    console.log('Importing customers, first row sample:', customers[0]);
-    
-    results.total = customers.length;
-    
-    for (let i = 0; i < customers.length; i++) {
-      try {
-        const rawRow = customers[i];
-        // Normalize keys to handle spaces and case sensitivity
-        const row = {};
-        Object.keys(rawRow).forEach(key => {
-          row[key.trim()] = rawRow[key];
-        });
-        
-        // Map Excel columns to our format
-        const customerData = {
-          name: row['Name'] || row['name'] || row['Customer Name'] || row['customer name'] || row.name,
-          email: row['Email'] || row['email'] || row.email || undefined,
-          phone: row['Phone'] || row['phone'] || row.phone || '',
-          businessName: row['Business Name'] || row['businessName'] || row['BusinessName'] || row.businessName,
-          businessType: row['Business Type'] || row['businessType'] || row.businessType || 'wholesale',
-          taxId: row['Tax ID'] || row['taxId'] || row.taxId || '',
-          customerTier: row['Customer Tier'] || row['customerTier'] || row.customerTier || 'bronze',
-          creditLimit: row['Credit Limit'] || row['creditLimit'] || row.creditLimit || 0,
-          openingBalance: row['Opening Balance'] || row['openingBalance'] || row.openingBalance || 0,
-          paymentTerms: row['Payment Terms'] || row['paymentTerms'] || row.paymentTerms || 'cash',
-          street: row['Street'] || row['street'] || row['Address'] || row.street || '',
-          city: row['City'] || row['city'] || row.city || '',
-          state: row['State'] || row['state'] || row.state || '',
-          zipCode: row['Zip Code'] || row['zipCode'] || row.zipCode || '',
-          country: row['Country'] || row['country'] || row.country || '',
-          status: row['Status'] || row['status'] || row.status || 'active',
-          notes: row['Notes'] || row['notes'] || row.notes || ''
-        };
-        
-        // Validate required fields
-        if (!customerData.name) {
-          results.errors.push({
-            row: i + 2,
-            error: 'Missing required field: Name is required'
-          });
-          continue;
-        }
-        
-        if (!customerData.businessName) {
-          results.errors.push({
-            row: i + 2,
-            error: 'Missing required field: Business Name is required'
-          });
-          continue;
-        }
-        
-        // Check if customer already exists (by business name, case-insensitive)
-        const normalizedBusinessName = customerData.businessName.toString().trim();
-        const existingCustomer = await customerRepository.findByBusinessName(normalizedBusinessName);
 
-        // If customer exists, treat this row as an update (useful when fixing missing business type, tier, etc.)
-        if (existingCustomer) {
-          const updatePayload = {};
-          if (customerData.businessType) {
-            updatePayload.businessType = customerData.businessType.toString().toLowerCase();
-          }
-          if (customerData.customerTier) {
-            updatePayload.customerTier = customerData.customerTier.toString().toLowerCase();
-          }
-          if (customerData.status) {
-            updatePayload.status = customerData.status.toString().toLowerCase();
-          }
 
-          // Only attempt update if we actually have something to change
-          if (Object.keys(updatePayload).length > 0) {
-            await customerService.updateCustomer(
-              existingCustomer.id,
-              updatePayload,
-              req.user?.id || req.user?._id
-            );
-            results.success++;
-          } else {
-            results.errors.push({
-              row: i + 2,
-              error: `Customer already exists with business name: ${customerData.businessName} (no updatable fields provided)`
-            });
-          }
-          continue;
-        }
 
-        // Create customer using service when it does not already exist
-        const customerPayload = {
-          name: customerData.name.toString().trim(),
-          email: customerData.email ? customerData.email.toString().trim() : undefined,
-          phone: customerData.phone.toString().trim() || '',
-          businessName: normalizedBusinessName,
-          businessType: customerData.businessType.toString().toLowerCase(),
-          taxId: customerData.taxId.toString().trim() || '',
-          customerTier: customerData.customerTier.toString().toLowerCase(),
-          creditLimit: parseFloat(customerData.creditLimit) || 0,
-          paymentTerms: customerData.paymentTerms.toString().toLowerCase(),
-          status: customerData.status.toString().toLowerCase(),
-          notes: customerData.notes.toString().trim() || '',
-          addresses: [{
-            street: customerData.street.toString().trim(),
-            city: customerData.city.toString().trim(),
-            state: customerData.state.toString().trim(),
-            zipCode: customerData.zipCode.toString().trim(),
-            country: customerData.country.toString().trim(),
-            isDefault: true,
-            type: 'both'
-          }]
-        };
-        
-        await customerService.createCustomer(customerPayload, req.user?.id || req.user?._id, {
-          openingBalance: parseFloat(customerData.openingBalance) || 0
-        });
-        results.success++;
-        
-      } catch (error) {
-        results.errors.push({
-          row: i + 2,
-          error: error.message
-        });
-      }
-    }
-    
-    // Clean up uploaded file
-    fs.unlinkSync(req.file.path);
-    
-    res.json({
-      message: 'Import completed',
-      results: results
-    });
-    
-  } catch (error) {
-    console.error('Excel import error:', error);
-    res.status(500).json({ message: 'Import failed' });
-  }
-});
 
-// @route   POST /api/customers/export/excel
-// @desc    Export customers to Excel
-// @access  Private
-router.post('/export/excel', [auth, requirePermission('view_customers')], async (req, res) => {
-  try {
-    const { filters = {} } = req.body;
-    
-    // Call service to get customers for export
-    const customers = await customerService.getCustomersForExport(filters);
-    
-    // Prepare Excel data
-    const excelData = customers.map(customer => {
-      // Parse address if it's a string (Postgres JSONB)
-      const raw = customer.address ?? customer.addresses;
-      const addresses = Array.isArray(raw) ? raw : (typeof raw === 'string' ? (JSON.parse(raw || '[]') || []) : []);
-      const defaultAddress = addresses.length > 0 ? (addresses.find(addr => addr.isDefault) || addresses[0]) : null;
-
-      return {
-        'Name': customer.name,
-        'Email': customer.email || '',
-        'Phone': customer.phone || '',
-        'Business Name': customer.businessName || customer.business_name || '',
-        'Business Type': customer.businessType || '',
-        'Tax ID': customer.taxId || '',
-        'Customer Tier': customer.customerTier || '',
-        'Credit Limit': customer.creditLimit || 0,
-        'Opening Balance': customer.openingBalance || customer.opening_balance || 0,
-        'Current Balance': customer.currentBalance || 0,
-        'Payment Terms': customer.paymentTerms || '',
-        'Street': defaultAddress?.street || defaultAddress?.addressLine1 || defaultAddress?.address || '',
-        'City': defaultAddress?.city || '',
-        'State': defaultAddress?.state || '',
-        'Zip Code': defaultAddress?.zipCode || '',
-        'Country': defaultAddress?.country || '',
-        'Status': customer.status || 'active',
-        'Notes': customer.notes || '',
-        'Created Date': customer.createdAt ? new Date(customer.createdAt).toISOString().split('T')[0] : ''
-      };
-    });
-    
-    // Create Excel workbook
-    const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(excelData);
-    
-    // Set column widths
-    const columnWidths = [
-      { wch: 20 }, // Name
-      { wch: 25 }, // Email
-      { wch: 15 }, // Phone
-      { wch: 25 }, // Business Name
-      { wch: 15 }, // Business Type
-      { wch: 15 }, // Tax ID
-      { wch: 15 }, // Customer Tier
-      { wch: 12 }, // Credit Limit
-      { wch: 15 }, // Opening Balance
-      { wch: 15 }, // Current Balance
-      { wch: 15 }, // Payment Terms
-      { wch: 30 }, // Address
-      { wch: 15 }, // City
-      { wch: 15 }, // State
-      { wch: 10 }, // Zip Code
-      { wch: 15 }, // Country
-      { wch: 10 }, // Status
-      { wch: 30 }, // Notes
-      { wch: 12 }  // Created Date
-    ];
-    worksheet['!cols'] = columnWidths;
-    
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Customers');
-    
-    // Ensure exports directory exists
-    if (!fs.existsSync('exports')) {
-      fs.mkdirSync('exports');
-    }
-    
-    const filename = 'customers.xlsx';
-    const filepath = path.join('exports', filename);
-    XLSX.writeFile(workbook, filepath);
-    
-    res.json({
-      message: 'Customers exported successfully',
-      filename: filename,
-      recordCount: excelData.length,
-      downloadUrl: `/api/customers/download/${filename}`
-    });
-    
-  } catch (error) {
-    console.error('Excel export error:', error);
-    res.status(500).json({ message: 'Export failed' });
-  }
-});
-
-// @route   GET /api/customers/download/:filename
-// @desc    Download exported file
-// @access  Private
-router.get('/download/:filename', [auth, requirePermission('view_customers')], (req, res) => {
-  try {
-    const filename = req.params.filename;
-    const filepath = path.join('exports', filename);
-    
-    if (!fs.existsSync(filepath)) {
-      return res.status(404).json({ message: 'File not found' });
-    }
-    
-    res.download(filepath, filename, (err) => {
-      if (err) {
-        console.error('Download error:', err);
-        res.status(500).json({ message: 'Download failed' });
-      }
-    });
-    
-  } catch (error) {
-    console.error('Download error:', error);
-    res.status(500).json({ message: 'Download failed' });
-  }
-});
-
-// @route   GET /api/customers/template/excel
-// @desc    Download Excel template
-// @access  Private
-router.get('/template/excel', [auth, requirePermission('create_customers')], (req, res) => {
-  try {
-    const templateData = [
-      {
-        'Name': 'John Doe',
-        'Email': 'john@example.com',
-        'Phone': '555-0123',
-        'Business Name': 'Example Business Inc',
-        'Business Type': 'wholesale',
-        'Tax ID': '12-3456789',
-        'Customer Tier': 'bronze',
-        'Credit Limit': '5000',
-        'Opening Balance': '0',
-        'Payment Terms': 'cash',
-        'Street': '123 Main St',
-        'City': 'New York',
-        'State': 'NY',
-        'Zip Code': '10001',
-        'Country': 'USA',
-        'Status': 'active',
-        'Notes': 'Sample customer for template'
-      }
-    ];
-    
-    // Create Excel workbook
-    const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(templateData);
-    
-    // Set column widths
-    const columnWidths = [
-      { wch: 20 }, // Name
-      { wch: 25 }, // Email
-      { wch: 15 }, // Phone
-      { wch: 25 }, // Business Name
-      { wch: 15 }, // Business Type
-      { wch: 15 }, // Tax ID
-      { wch: 15 }, // Customer Tier
-      { wch: 12 }, // Credit Limit
-      { wch: 15 }, // Opening Balance
-      { wch: 15 }, // Payment Terms
-      { wch: 30 }, // Street
-      { wch: 15 }, // City
-      { wch: 15 }, // State
-      { wch: 10 }, // Zip Code
-      { wch: 15 }, // Country
-      { wch: 10 }, // Status
-      { wch: 30 }  // Notes
-    ];
-    worksheet['!cols'] = columnWidths;
-    
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Customers');
-    
-    // Ensure exports directory exists
-    if (!fs.existsSync('exports')) {
-      fs.mkdirSync('exports');
-    }
-    
-    const filename = 'customer_template.xlsx';
-    const filepath = path.join('exports', filename);
-    XLSX.writeFile(workbook, filepath);
-    
-    res.download(filepath, filename, (err) => {
-      if (err) {
-        console.error('Download error:', err);
-        res.status(500).json({ message: 'Failed to download template' });
-      }
-    });
-    
-  } catch (error) {
-    console.error('Template error:', error);
-    res.status(500).json({ message: 'Failed to generate template' });
-  }
-});
 
 // @route   GET /api/customers/:id/audit-logs
 // @desc    Get audit logs for a customer
@@ -1169,6 +797,28 @@ router.get('/:id/credit-score', [
   } catch (error) {
     console.error('Get credit score error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// @route   POST /api/customers/bulk-create
+// @desc    Bulk create customers from import
+// @access  Private
+router.post('/bulk-create', [
+  auth,
+  requirePermission('create_customers'),
+  body('customers').isArray().withMessage('Customers array is required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+    
+    const result = await customerService.bulkCreateCustomers(req.body.customers, req.user?.id || req.user?._id);
+    res.status(201).json(result);
+  } catch (error) {
+    console.error('Bulk create customers error:', error);
+    res.status(500).json({ message: 'Server error bulk creating customers', error: error.message });
   }
 });
 

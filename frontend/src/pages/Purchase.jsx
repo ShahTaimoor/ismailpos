@@ -1,25 +1,22 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Package,
-  Search,
   Plus,
-  Minus,
   Trash2,
   Building,
   Truck,
-  Calculator,
-  Save,
   Receipt,
-  User,
+  Printer,
+  Eye,
+  ChevronDown,
   Phone,
   Mail,
   MapPin,
   ArrowUpDown,
   Download,
-  XCircle
+  Camera
 } from 'lucide-react';
-import { useGetProductsQuery } from '../store/services/productsApi';
-import { useGetVariantsQuery } from '../store/services/productVariantsApi';
+import BaseModal from '../components/BaseModal';
 import {
   useGetSupplierQuery,
   useLazySearchSuppliersQuery,
@@ -27,41 +24,51 @@ import {
 import {
   useCreatePurchaseInvoiceMutation,
   useUpdatePurchaseInvoiceMutation,
-  useExportExcelMutation,
-  useExportCSVMutation,
-  useExportPDFMutation,
-  useExportJSONMutation,
-  useDownloadFileMutation,
+
 } from '../store/services/purchaseInvoicesApi';
-import { useGetBanksQuery } from '../store/services/banksApi';
-import { useFuzzySearch } from '../hooks/useFuzzySearch';
 import { SearchableDropdown } from '../components/SearchableDropdown';
 import { toast } from 'sonner';
 import { LoadingSpinner, LoadingButton, LoadingCard, LoadingGrid, LoadingPage, LoadingInline } from '../components/LoadingSpinner';
-import PrintModal from '../components/PrintModal';
+import PrintModal, { DirectPrintInvoice } from '../components/PrintModal';
+import BarcodeLabelPrinter from '../components/BarcodeLabelPrinter';
+import { buildReceiptLabelProductsFromLineItems } from '../utils/receiptLabelUtils';
 import { useTab } from '../contexts/TabContext';
 import { getComponentInfo } from '../components/ComponentRegistry';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  OrderCheckoutCard,
+  OrderDetailsSection,
+  OrderSummaryContent,
+  OrderInsetPanel,
+  OrderCheckoutActions,
+} from '../components/order/OrderCheckoutLayout';
+import { ProductSelectionCartSection } from '../components/order/ProductSelectionCartSection';
+import { CartItemsTableSection } from '../components/order/CartItemsTableSection';
+import { CartTableHeader } from '../components/order/CartTableHeader';
 import { DualUnitQuantityInput } from '../components/DualUnitQuantityInput';
 import {
   hasDualUnit,
   getPiecesPerBox,
   piecesToBoxesAndPieces,
   formatStockDualLabel,
+  computeTotalPieces,
 } from '../utils/dualUnitUtils';
 import { useCompanyInfo } from '../hooks/useCompanyInfo';
+import { getLocalDateString } from '../utils/dateUtils';
 
-// Helper to get local date in YYYY-MM-DD format (matches Sale page Bill Date)
-const getLocalDateString = (date = new Date()) => {
-  const d = date instanceof Date ? date : new Date(date);
-  if (isNaN(d.getTime())) return new Date().toISOString().split('T')[0];
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
 
-const PurchaseItem = ({ item, index, onUpdateQuantity, onUpdateCost, onRemove }) => {
+import AsyncErrorBoundary from '../components/AsyncErrorBoundary';
+import { useResponsive } from '../components/ResponsiveContainer';
+import { ProductSearch as SharedSalesProductSearch } from '../components/sales/ProductSearch';
+
+const PurchaseItem = ({ item, index, onUpdateQuantity, onUpdateCost, onRemove, onUpdateCartBoxCount, showProductImages, setPreviewImageProduct }) => {
   const { companyInfo: companySettings } = useCompanyInfo();
   const dualUnitShowBoxInputEnabled = companySettings.orderSettings?.dualUnitShowBoxInput !== false;
   const dualUnitShowPiecesInputEnabled = companySettings.orderSettings?.dualUnitShowPiecesInput !== false;
@@ -82,17 +89,38 @@ const PurchaseItem = ({ item, index, onUpdateQuantity, onUpdateCost, onRemove })
       {/* Mobile Card Layout */}
       <div className="md:hidden space-y-3 p-3 border border-gray-200 rounded-lg">
         <div className="flex items-start justify-between">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs font-medium text-gray-500 bg-gray-100 px-2 py-0.5 rounded">#{index + 1}</span>
-              {isLowStock && <span className="text-yellow-600 text-xs">⚠️ Low Stock</span>}
-            </div>
-            <p className="font-medium text-sm truncate">{displayName}</p>
+          <div className="flex-1 min-w-0 flex items-center gap-2">
+            {product?.imageUrl && showProductImages && (
+              <div 
+                className="h-10 w-10 flex-shrink-0 bg-gray-100 rounded overflow-hidden border border-gray-200 cursor-pointer hover:border-primary-500 transition-colors group relative"
+                onClick={() => setPreviewImageProduct(product)}
+                title="Click to view full size"
+              >
+                <img src={product.imageUrl} alt="" className="h-full w-full object-cover" />
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 flex items-center justify-center transition-colors">
+                  <Camera className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                </div>
+              </div>
+            )}
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs font-medium text-gray-500 bg-gray-100 px-2 py-0.5 rounded">#{index + 1}</span>
+                {isLowStock && <span className="text-yellow-600 text-xs">⚠️ Low Stock</span>}
+              </div>
+              <p className="font-medium text-sm truncate">{displayName}</p>
             {product.isVariant && (
               <p className="text-xs text-gray-500 mt-0.5">
                 {product.variantType}: {product.variantValue}
               </p>
             )}
+            {(() => {
+              const b = (product.barcode ?? '').toString().trim();
+              if (b) return <p className="text-xs text-gray-600 font-mono mt-0.5">Barcode: {b}</p>;
+              const s = (product.sku ?? '').toString().trim();
+              if (s) return <p className="text-xs text-gray-600 font-mono mt-0.5">SKU: {s}</p>;
+              return null;
+            })()}
+          </div>
           </div>
           <Button
             onClick={() => onRemove(item.product?._id)}
@@ -165,102 +193,159 @@ const PurchaseItem = ({ item, index, onUpdateQuantity, onUpdateCost, onRemove })
         </div>
       </div>
 
-      {/* Desktop Table Layout — 1+4+1+3+1+1+1 = 12 when dual qty needs box+pcs+total */}
-      <div className="hidden md:grid grid-cols-12 gap-3 sm:gap-4 items-center">
-        {/* Serial Number - 1 column */}
-        <div className="col-span-1">
-          <span className="text-xs sm:text-sm font-medium text-gray-700 bg-gray-50 px-0.5 py-1 rounded border border-gray-200 block text-center h-8 flex items-center justify-center">
-            {index + 1}
-          </span>
-        </div>
-
-        {/* Product Name */}
-        <div className={`${hasDualUnit(product) ? 'col-span-4' : 'col-span-6'} flex items-center min-h-8 min-w-0`}>
-          <div className="flex flex-col min-w-0 flex-1">
-            <span className="font-medium text-xs sm:text-sm truncate">
-              {displayName}
-              {isLowStock && <span className="text-yellow-600 text-xs ml-2">⚠️ Low Stock</span>}
+      {/* Desktop Table Row — same column model as Sales (Box + Qty split when dual-unit) */}
+      <div className={`hidden md:block py-1 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+        <div
+          className={`grid gap-x-1 items-center ${
+            dualUnitShowBoxInputEnabled
+              ? 'grid-cols-[2.25rem_minmax(0,1fr)_4.75rem_5.35rem_5.35rem_5.35rem_5.35rem_2.25rem]'
+              : 'grid-cols-[2.25rem_minmax(0,1fr)_5.35rem_5.35rem_5.35rem_5.35rem_2.25rem]'
+          }`}
+        >
+          <div className="min-w-0 flex justify-start">
+            <span className="text-sm font-medium text-gray-700 bg-gray-50 px-0.5 py-1 rounded border border-gray-200 block w-8 text-center h-8 flex items-center justify-center">
+              {index + 1}
             </span>
-            {product.isVariant && (
-              <span className="text-xs text-gray-500 truncate">
-                {product.variantType}: {product.variantValue}
-              </span>
-            )}
           </div>
-        </div>
 
-        {/* Stock - 1 column */}
-        <div className="col-span-1 min-w-0">
-          <span className="text-xs sm:text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-1 rounded border border-gray-200 block text-center min-h-8 flex items-center justify-center leading-tight">
-            {hasDualUnit(product)
-              ? formatStockDualLabel(currentStock, product)
-              : currentStock}
-          </span>
-        </div>
+          <div className="min-w-0 flex items-center h-8 gap-2">
+            {product?.imageUrl && showProductImages && (
+              <div 
+                className="h-8 w-8 flex-shrink-0 bg-gray-100 rounded overflow-hidden border border-gray-200 cursor-pointer hover:border-primary-500 transition-colors group relative"
+                onClick={() => setPreviewImageProduct(product)}
+                title="Click to view full size"
+              >
+                <img src={product.imageUrl} alt="" className="h-full w-full object-cover" />
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 flex items-center justify-center transition-colors">
+                  <Camera className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                </div>
+              </div>
+            )}
+            <div className="flex flex-col min-w-0 w-full">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="font-medium text-sm truncate min-w-0">{displayName}</span>
+                {isLowStock && <span className="text-yellow-600 text-xs whitespace-nowrap">⚠️ Low Stock</span>}
+              </div>
+              {product.isVariant && (
+                <span className="text-xs text-gray-500 truncate">
+                  {product.variantType}: {product.variantValue}
+                </span>
+              )}
+              {(() => {
+                const b = (product.barcode ?? '').toString().trim();
+                if (b) return <span className="text-xs text-gray-600 font-mono truncate">Barcode: {b}</span>;
+                const s = (product.sku ?? '').toString().trim();
+                if (s) return <span className="text-xs text-gray-600 font-mono truncate">SKU: {s}</span>;
+                return null;
+              })()}
+            </div>
+          </div>
 
-        {/* Quantity */}
-        <div className={`${hasDualUnit(product) ? 'col-span-3' : 'col-span-1'} min-w-0`}>
-          {hasDualUnit(product) ? (
+          {dualUnitShowBoxInputEnabled && (
+            <div className="min-w-0">
+              {hasDualUnit(product) ? (
+                (() => {
+                  const ppb = getPiecesPerBox(product);
+                  const boxVal =
+                    item.boxes != null
+                      ? item.boxes
+                      : ppb
+                        ? piecesToBoxesAndPieces(item.quantity, ppb).boxes
+                        : 0;
+                  return (
+                    <input
+                      type="number"
+                      min={0}
+                      value={item.quantity === 0 ? '' : boxVal}
+                      onChange={(e) => onUpdateCartBoxCount(item.product?._id, e.target.value)}
+                      className={`text-sm font-semibold w-full min-w-0 rounded border px-2 py-1 text-center h-8 focus:outline-none focus:ring-2 focus:ring-primary-500/35 ${
+                        (product.inventory?.currentStock || 0) === 0
+                          ? 'text-red-700 bg-red-50 border-red-200'
+                          : (product.inventory?.currentStock || 0) <= (product.inventory?.reorderPoint || 0)
+                            ? 'text-yellow-800 bg-yellow-50 border-yellow-200'
+                            : 'text-gray-700 bg-gray-100 border-gray-200'
+                      }`}
+                      title="Full boxes"
+                    />
+                  );
+                })()
+              ) : (
+                <span
+                  className="text-sm font-semibold px-2 py-1 rounded border block text-center h-8 flex items-center justify-center text-gray-400 bg-gray-50 border-gray-200"
+                  title="Not applicable"
+                >
+                  —
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="min-w-0">
+            <span
+              className={`text-sm font-semibold px-2 py-1 rounded border block text-center h-8 flex items-center justify-center ${
+                (product.inventory?.currentStock || 0) === 0
+                  ? 'text-red-700 bg-red-50 border-red-200'
+                  : (product.inventory?.currentStock || 0) <= (product.inventory?.reorderPoint || 0)
+                    ? 'text-yellow-700 bg-yellow-50 border-yellow-200'
+                    : 'text-gray-700 bg-gray-100 border-gray-200'
+              }`}
+            >
+              {hasDualUnit(product) ? formatStockDualLabel(currentStock, product) : currentStock}
+            </span>
+          </div>
+
+          <div className="min-w-0">
             <DualUnitQuantityInput
               product={product}
               quantity={item.quantity}
-              showBoxInput={dualUnitShowBoxInputEnabled}
-              showPiecesInput={dualUnitShowPiecesInputEnabled}
               onChange={(newQuantity, dual) => {
                 if (newQuantity <= 0) {
                   onRemove(item.product?._id);
                   return;
                 }
                 const ppb = getPiecesPerBox(product);
-                const { boxes, pieces } = ppb && dual ? dual : (ppb ? piecesToBoxesAndPieces(newQuantity, ppb) : {});
+                const { boxes, pieces } = ppb && dual ? dual : ppb ? piecesToBoxesAndPieces(newQuantity, ppb) : {};
                 onUpdateQuantity(item.product?._id, newQuantity, ppb ? { boxes, pieces } : undefined);
               }}
               min={1}
-              inputClassName="input text-center text-xs sm:text-sm h-8"
+              showRemainingAfterSale={false}
+              showPiecesUnitLabel={false}
+              showBoxInput={dualUnitShowBoxInputEnabled && !hasDualUnit(product)}
+              showPiecesInput={dualUnitShowPiecesInputEnabled}
+              inputClassName="w-full min-w-0 text-center h-8 border border-gray-300 rounded px-2"
               compact={hasDualUnit(product)}
             />
-          ) : (
-            <input
+          </div>
+
+          <div className="min-w-0">
+            <Input
               type="number"
+              step="0.01"
               autoComplete="off"
-              value={item.quantity}
-              onChange={(e) => onUpdateQuantity(item.product?._id, parseInt(e.target.value) || 1)}
-              className="input text-center text-xs sm:text-sm h-8"
-              min="1"
+              value={item.costPerUnit}
+              onChange={(e) => onUpdateCost(item.product?._id, parseFloat(e.target.value) || 0)}
+              className="text-center h-8"
+              min="0"
             />
-          )}
-        </div>
+          </div>
 
-        {/* Cost - 1 column */}
-        <div className="col-span-1">
-          <input
-            type="number"
-            step="0.01"
-            autoComplete="off"
-            value={item.costPerUnit}
-            onChange={(e) => onUpdateCost(item.product?._id, parseFloat(e.target.value) || 0)}
-            className="input text-center text-xs sm:text-sm h-8"
-            min="0"
-          />
-        </div>
+          <div className="min-w-0">
+            <span className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-1 rounded border border-gray-200 block w-full min-w-0 text-center h-8 flex items-center justify-center">
+              {Number.isFinite(totalPrice) ? totalPrice.toFixed(2) : '0.00'}
+            </span>
+          </div>
 
-        {/* Total - 1 column */}
-        <div className="col-span-1">
-          <span className="text-xs sm:text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-1 rounded border border-gray-200 block text-center h-8 flex items-center justify-center">
-            {totalPrice.toFixed(2)}
-          </span>
-        </div>
-
-        {/* Delete Button - 1 column */}
-        <div className="col-span-1">
-          <Button
-            onClick={() => onRemove(item.product?._id)}
-            variant="destructive"
-            size="sm"
-            className="h-8 w-full"
-          >
-            <Trash2 className="h-4 w-4" />
-          </Button>
+          <div className="min-w-0 flex justify-end">
+            <Button
+              onClick={() => onRemove(item.product?._id)}
+              variant="destructive"
+              size="sm"
+              className="h-8 w-8 p-0"
+              title="Delete"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       </div>
     </div>
@@ -271,329 +356,27 @@ const PurchaseItem = ({ item, index, onUpdateQuantity, onUpdateCost, onRemove })
 // This was using react-query instead of RTK Query, causing conflicts
 
 const ProductSearch = ({ onAddProduct, onRefetchReady }) => {
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedProduct, setSelectedProduct] = useState(null);
-  const [quantity, setQuantity] = useState(1);
-  const [costPerUnit, setCostPerUnit] = useState('0');
   const { companyInfo: companySettings } = useCompanyInfo();
   const dualUnitShowBoxInputEnabled = companySettings.orderSettings?.dualUnitShowBoxInput !== false;
   const dualUnitShowPiecesInputEnabled = companySettings.orderSettings?.dualUnitShowPiecesInput !== false;
 
-  // Ref for the product search input to focus after adding to cart
-  const productSearchRef = useRef(null);
-
-  // Focus on product search field only after adding to cart
-  // Removed auto-focus on mount to let supplier selection be focused first
-
-  // Fetch all active products for client-side fuzzy search
-  const { data: productsData, isLoading, error, refetch: refetchProducts } = useGetProductsQuery(
-    { limit: 999999, status: 'active' },
-    {
-      keepPreviousData: true,
-      staleTime: 0, // Always consider data stale to get fresh stock levels
-      refetchOnMountOrArgChange: true, // Refetch when component mounts or params change
-    }
-  );
-
-  // Fetch all variants for search
-  const { data: variantsData, isLoading: variantsLoading } = useGetVariantsQuery(
-    { status: 'active' },
-    {
-      keepPreviousData: true,
-      staleTime: 0,
-      refetchOnMountOrArgChange: true,
-    }
-  );
-
-  // Expose refetch function to parent component via callback
-  useEffect(() => {
-    if (onRefetchReady && refetchProducts && typeof refetchProducts === 'function') {
-      onRefetchReady(refetchProducts);
-    }
-  }, [onRefetchReady, refetchProducts]);
-
-  // Extract products array from RTK Query response
-  const allProducts = React.useMemo(() => {
-    if (!productsData) return [];
-    if (Array.isArray(productsData)) return productsData;
-    if (productsData?.data?.products) return productsData.data.products;
-    if (productsData?.products) return productsData.products;
-    if (productsData?.data?.data?.products) return productsData.data.data.products;
-    return [];
-  }, [productsData]);
-
-  // Extract variants array from RTK Query response
-  const allVariants = React.useMemo(() => {
-    if (!variantsData) return [];
-    if (Array.isArray(variantsData)) return variantsData;
-    if (variantsData?.data?.variants) return variantsData.data.variants;
-    if (variantsData?.variants) return variantsData.variants;
-    return [];
-  }, [variantsData]);
-
-  // Combine products and variants for search, marking variants with isVariant flag
-  const allItems = React.useMemo(() => {
-    const productsList = allProducts.map(p => ({ ...p, isVariant: false }));
-    const variantsList = allVariants
-      .filter(v => v.status === 'active')
-      .map(v => ({
-        ...v,
-        isVariant: true,
-        // Use variant's display name for search, but keep variant data
-        name: v.displayName || v.variantName || `${v.baseProduct?.name || ''} - ${v.variantValue || ''}`,
-        // Use variant pricing and inventory
-        pricing: v.pricing || { retail: 0, wholesale: 0, cost: 0 },
-        inventory: v.inventory || { currentStock: 0, reorderPoint: 0 },
-        // Keep reference to base product
-        baseProductId: v.baseProduct?._id || v.baseProduct,
-        baseProductName: v.baseProduct?.name || '',
-        variantType: v.variantType,
-        variantValue: v.variantValue,
-        variantName: v.variantName,
-      }));
-    return [...productsList, ...variantsList];
-  }, [allProducts, allVariants]);
-
-  const filteredProducts = useFuzzySearch(
-    allItems,
-    searchTerm,
-    ['name', 'description', 'brand', 'barcode', 'sku', 'displayName', 'variantValue', 'variantName'],
-    {
-      threshold: 0.4,
-      minScore: 0.3,
-      limit: null // Show unlimited products
-    }
-  );
-
-  const handleProductSelect = (product) => {
-    setSelectedProduct(product);
-    // Use variant pricing if it's a variant
-    const cost = product.pricing?.cost || 0;
-    setCostPerUnit(cost.toString());
-    // Keep the product/variant name visible in the search field until it's added to cart
-    const displayName = product.isVariant
-      ? (product.displayName || product.variantName || product.name)
-      : product.name;
-    setSearchTerm(displayName);
-  };
-
-  const handleAddToCart = () => {
-    if (!selectedProduct) return;
-
-    // Validate that cost is filled
-    if (!costPerUnit || parseFloat(costPerUnit) <= 0) {
-      toast.error('Please enter a valid cost per unit');
-      return;
-    }
-
-    const ppb = getPiecesPerBox(selectedProduct);
-    const { boxes, pieces } = ppb ? piecesToBoxesAndPieces(quantity, ppb) : {};
-    onAddProduct({
-      product: selectedProduct,
-      quantity,
-      costPerUnit: parseFloat(costPerUnit),
-      ...(ppb && { boxes, pieces }),
-    });
-
-    // Reset form
-    setSelectedProduct(null);
-    setQuantity(1);
-    setCostPerUnit('0');
-    setSearchTerm('');
-
-    // Focus back to product search field for next product selection
-    setTimeout(() => {
-      if (productSearchRef.current) {
-        productSearchRef.current.focus();
-      }
-    }, 100);
-  };
-
-  const productDisplayKey = (product) => {
-    const inventory = product.inventory || {};
-    const pricing = product.pricing || {};
-
-    // Get display name - use variant display name if it's a variant
-    const displayName = product.isVariant
-      ? (product.displayName || product.variantName || product.name)
-      : product.name;
-
-    // Show variant indicator
-    const variantInfo = product.isVariant
-      ? <span className="text-xs text-blue-600 font-semibold">({product.variantType}: {product.variantValue})</span>
-      : null;
-
-    return (
-      <div className="flex items-center justify-between w-full">
-        <div className="flex flex-col">
-          <div className="font-medium">{displayName}</div>
-          {variantInfo && <div className="text-xs text-gray-500">{variantInfo}</div>}
-        </div>
-        <div className="flex items-center space-x-4">
-          <div className={`text-sm ${inventory.currentStock === 0 ? 'text-red-600' : inventory.currentStock <= (inventory.reorderPoint || inventory.minStock || 0) ? 'text-orange-600' : 'text-gray-600'}`}>
-            Stock:{' '}
-            {hasDualUnit(product)
-              ? formatStockDualLabel(inventory.currentStock || 0, product)
-              : `${inventory.currentStock || 0} pcs`}
-          </div>
-          <div className="text-sm text-gray-600">Cost: {Math.round(pricing.cost || 0)}</div>
-        </div>
-      </div>
-    );
-  };
-
-  const selDual = hasDualUnit(selectedProduct);
-
   return (
-    <div className="space-y-4">
-      {/* Product Selection — wider qty when dual (box + pcs + total) */}
-      <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 sm:gap-4 items-start">
-        {/* Product Search */}
-        <div className={`col-span-1 ${selDual ? 'sm:col-span-5' : 'sm:col-span-7'} min-w-0`}>
-          <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
-            Product Search
-          </label>
-          <SearchableDropdown
-            ref={productSearchRef}
-            placeholder="Search or select product..."
-            items={filteredProducts || []}
-            onSelect={handleProductSelect}
-            onSearch={(term) => {
-              setSearchTerm(term);
-              // Clear selected product if user starts typing a new search (different from selected product name)
-              if (selectedProduct && term !== selectedProduct.name) {
-                setSelectedProduct(null);
-                setCostPerUnit('0');
-              }
-            }}
-            displayKey={productDisplayKey}
-            selectedItem={selectedProduct}
-            loading={isLoading}
-            emptyMessage={searchTerm.length > 0 ? "No products found" : "Start typing to search products..."}
-            value={selectedProduct ? selectedProduct.name : searchTerm}
-            showSelected={true}
-          />
-        </div>
-
-        {/* Stock - 1 column */}
-        <div className="col-span-1 sm:col-span-1 min-w-0">
-          <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
-            Stock
-          </label>
-          <span className="text-xs sm:text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-1 rounded border border-gray-200 block text-center min-h-10 flex flex-col items-center justify-center leading-tight">
-            {selectedProduct ? (
-              selDual ? (
-                <>
-                  <span className="text-[11px]">{formatStockDualLabel(selectedProduct.inventory?.currentStock || 0, selectedProduct)}</span>
-                  <span className="text-[10px] font-normal text-gray-500">available</span>
-                </>
-              ) : (
-                <span>{selectedProduct.inventory?.currentStock || 0}</span>
-              )
-            ) : (
-              '0'
-            )}
-          </span>
-        </div>
-
-        {/* Quantity */}
-        <div className={`col-span-1 ${selDual ? 'sm:col-span-3' : 'sm:col-span-1'} min-w-0`}>
-          <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
-            Quantity
-          </label>
-          {selectedProduct && selDual ? (
-            <DualUnitQuantityInput
-              product={selectedProduct}
-              quantity={quantity}
-              onChange={(q) => setQuantity(q)}
-              showBoxInput={dualUnitShowBoxInputEnabled}
-              showPiecesInput={dualUnitShowPiecesInputEnabled}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && selectedProduct) {
-                  e.preventDefault();
-                  handleAddToCart();
-                }
-              }}
-              inputClassName="input text-center text-sm sm:text-base h-10"
-              compact={selDual}
-            />
-          ) : (
-            <input
-              type="number"
-              min="1"
-              autoComplete="off"
-              value={quantity}
-              onChange={(e) => setQuantity(parseInt(e.target.value) || 1)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && selectedProduct) {
-                  e.preventDefault();
-                  handleAddToCart();
-                }
-              }}
-              className="input text-center text-sm sm:text-base h-10"
-              placeholder="1 (Enter to add & focus search)"
-            />
-          )}
-        </div>
-
-        {/* Cost - 1 column (reduced from 2) */}
-        <div className="col-span-1 sm:col-span-1">
-          <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
-            Cost
-          </label>
-          <input
-            type="number"
-            step="1"
-            autoComplete="off"
-            value={costPerUnit}
-            onChange={(e) => setCostPerUnit(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && selectedProduct) {
-                e.preventDefault();
-                handleAddToCart();
-              }
-            }}
-            className="input text-center text-sm sm:text-base"
-            placeholder="0 (Enter to add & focus search)"
-            required
-          />
-        </div>
-
-        {/* Amount - 1 column */}
-        <div className="col-span-1 sm:col-span-1">
-          <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
-            Amount
-          </label>
-          <input
-            type="text"
-            autoComplete="off"
-            value={selectedProduct ? Math.round(quantity * parseFloat(costPerUnit || 0)) : ''}
-            className="input text-center font-medium text-sm sm:text-base"
-            disabled
-            placeholder=""
-          />
-        </div>
-
-        {/* Add Button - 1 column */}
-        <div className="col-span-1 sm:col-span-1">
-          <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
-            &nbsp;
-          </label>
-          <Button
-            type="button"
-            onClick={handleAddToCart}
-            variant="default"
-            size="default"
-            className="w-full flex items-center justify-center gap-2"
-            disabled={!selectedProduct}
-            title="Add to cart (or press Enter in Quantity/Cost fields - focus returns to search)"
-          >
-            <Plus className="h-4 w-4" />
-            <span>Add</span>
-          </Button>
-        </div>
-      </div>
-    </div>
+    <SharedSalesProductSearch
+      onAddProduct={(item) =>
+        onAddProduct({
+          ...item,
+          costPerUnit: Number(item.costPerUnit ?? item.unitPrice ?? 0),
+        })
+      }
+      selectedCustomer={null}
+      showCostPrice={false}
+      hasCostPricePermission={false}
+      priceType="cost"
+      dualUnitShowBoxInput={dualUnitShowBoxInputEnabled}
+      dualUnitShowPiecesInput={dualUnitShowPiecesInputEnabled}
+      allowOutOfStock
+      onRefetchReady={onRefetchReady}
+    />
   );
 };
 
@@ -607,7 +390,22 @@ export const Purchase = ({ tabId, editData }) => {
   const [billDate, setBillDate] = useState(getLocalDateString()); // Bill Date for backdating (same as Sale page)
   const [notes, setNotes] = useState('');
   const [taxExempt, setTaxExempt] = useState(true);
-  const [isMobile, setIsMobile] = useState(false);
+  const [showPurchaseDetailsFields, setShowPurchaseDetailsFields] = useState(false);
+  const [showProductImages, setShowProductImages] = useState(localStorage.getItem('showProductImagesUI') !== 'false');
+
+  useEffect(() => {
+    const handleConfigChange = () => {
+      setShowProductImages(localStorage.getItem('showProductImagesUI') !== 'false');
+    };
+    window.addEventListener('productImagesConfigChanged', handleConfigChange);
+    return () => window.removeEventListener('productImagesConfigChanged', handleConfigChange);
+  }, []);
+
+  const [previewImageProduct, setPreviewImageProduct] = useState(null);
+
+  const { isMobile } = useResponsive();
+  const { companyInfo: companySettings } = useCompanyInfo();
+  const dualUnitShowBoxInputEnabledPage = companySettings.orderSettings?.dualUnitShowBoxInput !== false;
 
   // Ref for supplier selection field to focus on page load
   const supplierSearchRef = useRef(null);
@@ -620,34 +418,35 @@ export const Purchase = ({ tabId, editData }) => {
   // Print modal state
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [currentOrder, setCurrentOrder] = useState(null);
+  const [directPrintOrder, setDirectPrintOrder] = useState(null);
 
-  // Export modal state
-  const [showExportModal, setShowExportModal] = useState(false);
-  const [exportFormat, setExportFormat] = useState('pdf');
-  const [isExporting, setIsExporting] = useState(false);
+  const PURCHASE_INVOICE_LABEL_KEY = 'purchaseInvoiceOfferBarcodeLabels';
+  const [printBarcodeLabelsAfterInvoice, setPrintBarcodeLabelsAfterInvoice] = useState(() => {
+    try {
+      const v = localStorage.getItem(PURCHASE_INVOICE_LABEL_KEY);
+      if (v === null) return false;
+      return v === 'true';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(PURCHASE_INVOICE_LABEL_KEY, String(printBarcodeLabelsAfterInvoice));
+    } catch {
+      /* ignore */
+    }
+  }, [printBarcodeLabelsAfterInvoice]);
 
-  // Calculate default date range (one month ago to today)
-  const getDefaultDateRange = () => {
-    const today = new Date();
-    const oneMonthAgo = new Date();
-    oneMonthAgo.setMonth(today.getMonth() - 1);
+  const pendingReceiptLabelPayloadRef = useRef(null);
+  const [showReceiptLabelPrinter, setShowReceiptLabelPrinter] = useState(false);
+  const [receiptLabelProducts, setReceiptLabelProducts] = useState([]);
 
-    const formatDate = (date) => {
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const day = String(date.getDate()).padStart(2, '0');
-      return `${year}-${month}-${day}`;
-    };
 
-    return {
-      from: formatDate(oneMonthAgo),
-      to: formatDate(today)
-    };
-  };
 
-  const defaultDateRange = getDefaultDateRange();
-  const [exportDateFrom, setExportDateFrom] = useState(defaultDateRange.from);
-  const [exportDateTo, setExportDateTo] = useState(defaultDateRange.to);
+
+
+
 
   const { updateTabTitle, getActiveTab, openTab } = useTab();
 
@@ -656,25 +455,9 @@ export const Purchase = ({ tabId, editData }) => {
 
   // RTK Query hooks
   const [searchSuppliers, { data: suppliersSearchResult, isLoading: suppliersLoading, refetch: refetchSuppliers }] = useLazySearchSuppliersQuery();
-  const { data: banksData } = useGetBanksQuery();
   const [createPurchaseInvoice] = useCreatePurchaseInvoiceMutation();
   const [updatePurchaseInvoice] = useUpdatePurchaseInvoiceMutation();
-  const [exportExcel] = useExportExcelMutation();
-  const [exportCSV] = useExportCSVMutation();
-  const [exportPDF] = useExportPDFMutation();
-  const [exportJSON] = useExportJSONMutation();
-  const [downloadFile] = useDownloadFileMutation();
 
-  // Check if mobile on mount and resize
-  useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth < 768);
-    };
-
-    checkMobile();
-    window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
-  }, []);
 
   // Focus on supplier selection field when component mounts
   useEffect(() => {
@@ -792,6 +575,15 @@ export const Purchase = ({ tabId, editData }) => {
   const generateInvoiceNumber = (supplier) => {
     if (!supplier) return '';
 
+    // Check if sequential numbering is enabled
+    const orderSettings = companySettings.orderSettings || {};
+    if (orderSettings.purchaseSequenceEnabled) {
+      const prefix = orderSettings.purchaseSequencePrefix || 'PUR-';
+      const nextNum = orderSettings.purchaseSequenceNext || 1;
+      const padding = orderSettings.purchaseSequencePadding || 3;
+      return `${prefix}${String(nextNum).padStart(padding, '0')}`;
+    }
+
     const now = new Date();
     const year = now.getFullYear();
     const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -820,7 +612,7 @@ export const Purchase = ({ tabId, editData }) => {
           <div className="text-xs text-gray-500">{supplier.name}</div>
         )}
         <div className="text-sm text-gray-600">
-          Outstanding Balance: {(supplier.pendingBalance || 0).toFixed(2)}
+          Outstanding Balance: {(Number(supplier.pendingBalance ?? supplier.outstandingBalance ?? 0) || 0).toFixed(2)}
         </div>
       </div>
     );
@@ -850,6 +642,8 @@ export const Purchase = ({ tabId, editData }) => {
 
   // Handler functions for purchase invoice mutations
   const handleCreatePurchaseInvoice = async (invoiceData) => {
+    const labelPayload = pendingReceiptLabelPayloadRef.current;
+    pendingReceiptLabelPayloadRef.current = null;
     try {
       const result = await createPurchaseInvoice(invoiceData).unwrap();
 
@@ -859,6 +653,14 @@ export const Purchase = ({ tabId, editData }) => {
       const successCount = inventoryUpdates.filter(update => update.success).length;
 
       toast.success(`Purchase invoice created successfully! Invoice ${invoiceNumber} created and ${successCount} products added to inventory.`);
+
+      if (labelPayload?.items?.length) {
+        const prods = buildReceiptLabelProductsFromLineItems(labelPayload.items);
+        if (prods.length) {
+          setReceiptLabelProducts(prods);
+          setShowReceiptLabelPrinter(true);
+        }
+      }
 
       // Immediately refetch products to update stock and prices
       if (refetchProducts && typeof refetchProducts === 'function') {
@@ -880,7 +682,7 @@ export const Purchase = ({ tabId, editData }) => {
             if (s && (s._id || s.id)) {
               setSelectedSupplier(s);
             }
-          }).catch(() => {});
+          }).catch(() => { });
         } catch {
           /* ignore */
         }
@@ -1035,7 +837,8 @@ export const Purchase = ({ tabId, editData }) => {
     : directDiscount.value;
 
   const total = subtotal + tax - directDiscountAmount;
-  const supplierOutstanding = selectedSupplier?.pendingBalance || 0;
+  const supplierOutstanding =
+    Number(selectedSupplier?.pendingBalance ?? selectedSupplier?.outstandingBalance ?? 0) || 0;
   const totalPayables = total + supplierOutstanding;
 
   const addToPurchase = (newItem) => {
@@ -1062,16 +865,16 @@ export const Purchase = ({ tabId, editData }) => {
         return prevItems.map(item =>
           item.product?._id === newItem.product?._id
             ? (() => {
-                const mergedQty = item.quantity + newItem.quantity;
-                const ppb = getPiecesPerBox(item.product);
-                const split = ppb ? piecesToBoxesAndPieces(mergedQty, ppb) : {};
-                return {
-                  ...item,
-                  quantity: mergedQty,
-                  costPerUnit: newItem.costPerUnit,
-                  ...(ppb ? { boxes: split.boxes, pieces: split.pieces } : {}),
-                };
-              })()
+              const mergedQty = item.quantity + newItem.quantity;
+              const ppb = getPiecesPerBox(item.product);
+              const split = ppb ? piecesToBoxesAndPieces(mergedQty, ppb) : {};
+              return {
+                ...item,
+                quantity: mergedQty,
+                costPerUnit: newItem.costPerUnit,
+                ...(ppb ? { boxes: split.boxes, pieces: split.pieces } : {}),
+              };
+            })()
             : item
         );
       }
@@ -1117,6 +920,29 @@ export const Purchase = ({ tabId, editData }) => {
     setPurchaseItems(prevItems => prevItems.filter(item => item.product?._id !== productId));
   };
 
+  const updateCartBoxCount = (productId, newBoxes) => {
+    const boxes = Math.max(0, parseInt(String(newBoxes), 10) || 0);
+    setPurchaseItems((prevItems) => {
+      const cartItem = prevItems.find((item) => item.product?._id === productId);
+      if (!cartItem) return prevItems;
+      const ppb = getPiecesPerBox(cartItem.product);
+      if (!ppb) return prevItems;
+
+      const pieces =
+        cartItem.pieces != null ? cartItem.pieces : piecesToBoxesAndPieces(cartItem.quantity, ppb).pieces;
+      const total = computeTotalPieces(boxes, pieces, ppb);
+
+      if (total <= 0) {
+        return prevItems.filter((item) => item.product?._id !== productId);
+      }
+
+      const { boxes: nb, pieces: np } = piecesToBoxesAndPieces(total, ppb);
+      return prevItems.map((item) =>
+        item.product?._id === productId ? { ...item, quantity: total, boxes: nb, pieces: np } : item
+      );
+    });
+  };
+
   const handleSortPurchaseItems = () => {
     setPurchaseItems(prevItems => {
       if (!prevItems || prevItems.length < 2) {
@@ -1155,146 +981,7 @@ export const Purchase = ({ tabId, editData }) => {
     });
   };
 
-  const handleExport = () => {
-    setShowExportModal(true);
-  };
 
-  const handleExportConfirm = async () => {
-    setIsExporting(true);
-    try {
-      // Build filters based on current view (if any filters exist)
-      const filters = {
-        // Include supplier filter if a supplier is selected
-        ...(selectedSupplier?._id && { supplier: selectedSupplier._id }),
-        // Include date range if selected
-        ...(exportDateFrom && { dateFrom: exportDateFrom }),
-        ...(exportDateTo && { dateTo: exportDateTo }),
-      };
-
-      let response;
-      if (exportFormat === 'excel') {
-        response = await exportExcel(filters).unwrap();
-      } else if (exportFormat === 'csv') {
-        response = await exportCSV(filters).unwrap();
-      } else if (exportFormat === 'json') {
-        response = await exportJSON(filters).unwrap();
-      } else if (exportFormat === 'pdf') {
-        response = await exportPDF(filters).unwrap();
-      }
-
-      if (response?.filename || response?.data?.filename) {
-        const filename = response.filename || response.data.filename;
-
-        try {
-          // Add a small delay to ensure file is written (PDF generation is async)
-          if (exportFormat === 'pdf') {
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-
-          // Download the file
-          let downloadResponse;
-          try {
-            downloadResponse = await downloadFile(filename).unwrap();
-          } catch (downloadErr) {
-            const errorData = downloadErr?.data || downloadErr?.response?.data;
-            if (errorData instanceof Blob) {
-              const reader = new FileReader();
-              reader.onload = () => {
-                const text = reader.result;
-                try {
-                  const parsedError = JSON.parse(text);
-                  toast.error(parsedError.message || 'Download failed');
-                } catch {
-                  toast.error('Download failed');
-                }
-              };
-              reader.readAsText(errorData);
-            } else if (typeof errorData === 'object' && errorData !== null) {
-              toast.error(errorData.message || 'Download failed');
-            } else {
-              toast.error(downloadErr?.message || 'Download failed');
-            }
-            return;
-          }
-
-          if (!downloadResponse) {
-            toast.error('Download failed: No data received from server');
-            return;
-          }
-
-          // RTK Query returns the blob directly for blob responses
-          const blob = downloadResponse instanceof Blob ? downloadResponse : downloadResponse.data;
-
-          if (exportFormat === 'pdf') {
-
-            if (!blob || !(blob instanceof Blob)) {
-              toast.error('Invalid PDF file received');
-              return;
-            }
-
-            if (blob.size === 0) {
-              toast.error('PDF file is empty');
-              return;
-            }
-
-            // Check if blob is actually an error JSON
-            if (blob.type && (blob.type.includes('application/json') || blob.type.includes('text/html'))) {
-              const reader = new FileReader();
-              reader.onload = () => {
-                const text = reader.result;
-                try {
-                  const errorData = JSON.parse(text);
-                  toast.error(errorData.message || 'File not found or generation failed');
-                } catch {
-                  toast.error('Server returned error instead of PDF. Please try again.');
-                }
-              };
-              reader.readAsText(blob);
-              return;
-            }
-
-            const url = URL.createObjectURL(blob);
-            const newWindow = window.open(url, '_blank');
-
-            if (!newWindow) {
-              const link = document.createElement('a');
-              link.href = url;
-              link.download = filename;
-              document.body.appendChild(link);
-              link.click();
-              document.body.removeChild(link);
-              toast.success('PDF downloaded (popup was blocked)');
-            } else {
-              toast.success('PDF opened in new tab');
-            }
-            setTimeout(() => URL.revokeObjectURL(url), 10000);
-          } else {
-            // For Excel, CSV, JSON - download directly
-            const blob = downloadResponse instanceof Blob ? downloadResponse : downloadResponse.data;
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = filename;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            setTimeout(() => URL.revokeObjectURL(url), 100);
-            toast.success(`${exportFormat.toUpperCase()} file downloaded successfully`);
-          }
-
-          setShowExportModal(false);
-        } catch (downloadError) {
-          toast.error('Failed to download file');
-        }
-      } else {
-        toast.error('Export failed: No filename received');
-      }
-    } catch (error) {
-      toast.error('Failed to export purchase data: ' + (error?.data?.message || error?.message || 'Unknown error'));
-    } finally {
-      setIsExporting(false);
-    }
-  };
 
   const handleProcessPurchase = useCallback(() => {
     if (purchaseItems.length === 0) {
@@ -1320,7 +1007,7 @@ export const Purchase = ({ tabId, editData }) => {
 
     // Create purchase invoice data
     const invoiceData = {
-      supplier: selectedSupplier._id,
+      supplier: selectedSupplier.id || selectedSupplier._id,
       supplierInfo: {
         name: selectedSupplier.name,
         email: selectedSupplier.email,
@@ -1340,7 +1027,7 @@ export const Purchase = ({ tabId, editData }) => {
         })()
       },
       items: purchaseItems.map(item => ({
-        product: item.product?._id,
+        product: item.product?.id || item.product?._id,
         quantity: item.quantity,
         unitCost: item.costPerUnit,
         totalCost: item.quantity * item.costPerUnit
@@ -1366,35 +1053,30 @@ export const Purchase = ({ tabId, editData }) => {
       terms: ''
     };
 
+    pendingReceiptLabelPayloadRef.current = null;
+    if (printBarcodeLabelsAfterInvoice && !editData?.isEditMode && purchaseItems.length > 0) {
+      pendingReceiptLabelPayloadRef.current = { items: [...purchaseItems] };
+    }
+
     // Use appropriate mutation based on edit mode
     if (editData?.isEditMode) {
       handleUpdatePurchaseInvoice(editData.invoiceId, invoiceData);
     } else {
       handleCreatePurchaseInvoice(invoiceData);
     }
-  }, [purchaseItems, selectedSupplier, invoiceNumber, autoGenerateInvoice, expectedDelivery, billDate, notes, taxExempt, subtotal, tax, total, directDiscountAmount, paymentMethod, amountPaid, editData, handleCreatePurchaseInvoice, handleUpdatePurchaseInvoice]);
+  }, [purchaseItems, selectedSupplier, invoiceNumber, autoGenerateInvoice, expectedDelivery, billDate, notes, taxExempt, subtotal, tax, total, directDiscountAmount, paymentMethod, amountPaid, editData, handleCreatePurchaseInvoice, handleUpdatePurchaseInvoice, printBarcodeLabelsAfterInvoice]);
 
 
   return (
-    <>
+    <AsyncErrorBoundary>
       <div className="space-y-4 lg:space-y-6">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 sm:gap-0">
+        <div className={`flex ${isMobile ? 'flex-col space-y-4' : 'items-start justify-between'}`}>
           <div>
-            <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Purchase</h1>
-            <p className="text-sm sm:text-base text-gray-600">Process purchase transactions</p>
+            <h1 className={`${isMobile ? 'text-xl' : 'text-2xl'} font-bold text-gray-900`}>Purchase</h1>
+            <p className="text-gray-600">Process purchase transactions</p>
           </div>
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:space-x-2 w-full sm:w-auto">
-            <Button
-              onClick={handleExport}
-              variant="secondary"
-              size="default"
-              className="flex items-center justify-center gap-2 w-full sm:w-auto"
-              title="Export Purchase Report"
-            >
-              <Download className="h-4 w-4" />
-              <span className="hidden sm:inline">Export Purchase Report</span>
-              <span className="sm:hidden">Export</span>
-            </Button>
+          <div className="flex items-center space-x-2">
+
             <Button
               onClick={() => {
                 const componentInfo = getComponentInfo('/purchase');
@@ -1412,29 +1094,27 @@ export const Purchase = ({ tabId, editData }) => {
               }}
               variant="default"
               size="default"
-              className="flex items-center justify-center gap-2 w-full sm:w-auto"
             >
-              <Plus className="h-4 w-4" />
-              <span>New Purchase</span>
+              <Plus className="h-4 w-4 mr-2" />
+              New Purchase
             </Button>
           </div>
         </div>
 
         {/* Supplier Selection and Information Row */}
-        <div className="flex flex-col lg:flex-row items-start lg:gap-12 gap-4">
+        <div className={`flex ${isMobile ? 'flex-col space-y-4' : 'items-start space-x-12'}`}>
           {/* Supplier Selection */}
-          <div className="w-full lg:w-[750px] lg:flex-shrink-0">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-0 mb-2">
-              <label className="block text-xs sm:text-sm font-medium text-gray-700">
-                Select Supplier
-              </label>
-              <div className="flex items-center space-x-2">
+          <div className={`${isMobile ? 'w-full' : 'w-[750px] flex-shrink-0'}`}>
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <label className="block text-sm font-medium text-gray-700">
+                  Select Supplier
+                </label>
                 {selectedSupplier && (
                   <button
                     onClick={() => {
                       setSelectedSupplier(null);
                       setSupplierSearchTerm('');
-                      // Focus on the supplier search field after clearing
                       setTimeout(() => {
                         if (supplierSearchRef.current) {
                           supplierSearchRef.current.focus();
@@ -1447,6 +1127,8 @@ export const Purchase = ({ tabId, editData }) => {
                     Change Supplier
                   </button>
                 )}
+              </div>
+              <div className="flex items-center space-x-2">
                 <button
                   type="button"
                   onClick={async () => {
@@ -1457,7 +1139,7 @@ export const Purchase = ({ tabId, editData }) => {
                         /* ignore */
                       }
                     }
-                    if (selectedSupplier?._id && refetchSupplier) {
+                    if ((selectedSupplier?.id || selectedSupplier?._id) && refetchSupplier) {
                       try {
                         const result = await refetchSupplier();
                         const s =
@@ -1493,14 +1175,14 @@ export const Purchase = ({ tabId, editData }) => {
           </div>
 
           {/* Supplier Information - Right Side */}
-          <div className="w-full lg:flex-1">
+          <div className={`${isMobile ? 'w-full' : 'flex-1'}`}>
             {selectedSupplier ? (
-              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 sm:p-4">
-                <div className="flex items-start sm:items-center space-x-3">
-                  <Building className="h-4 w-4 sm:h-5 sm:w-5 text-gray-400 flex-shrink-0 mt-1 sm:mt-0" />
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                <div className="flex items-center space-x-3">
+                  <Building className="h-5 w-5 text-gray-400" />
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm sm:text-base truncate">{selectedSupplier.companyName || selectedSupplier.company_name || selectedSupplier.businessName || selectedSupplier.business_name || selectedSupplier.displayName || selectedSupplier.name || 'Unknown Supplier'}</p>
-                    <p className="text-xs sm:text-sm text-gray-600 capitalize mt-1">
+                    <p className="font-medium truncate">{selectedSupplier.companyName || selectedSupplier.company_name || selectedSupplier.businessName || selectedSupplier.business_name || selectedSupplier.displayName || selectedSupplier.name || 'Unknown Supplier'}</p>
+                    <p className="text-sm text-gray-600 capitalize mt-1">
                       {selectedSupplier.businessType && selectedSupplier.reliability
                         ? `${selectedSupplier.businessType} • ${selectedSupplier.reliability}`
                         : selectedSupplier.businessType || selectedSupplier.reliability || 'Supplier Information'
@@ -1509,8 +1191,8 @@ export const Purchase = ({ tabId, editData }) => {
                     <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:space-x-4 mt-2">
                       <div className="flex items-center space-x-1">
                         <span className="text-xs text-gray-500">Outstanding Balance:</span>
-                        <span className={`text-xs sm:text-sm font-medium ${(selectedSupplier.pendingBalance || 0) > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                          {Math.round(selectedSupplier.pendingBalance || 0)}
+                        <span className={`text-xs sm:text-sm font-medium ${supplierOutstanding > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                          {Math.round(supplierOutstanding)}
                         </span>
                       </div>
                       {selectedSupplier.phone && (
@@ -1550,390 +1232,632 @@ export const Purchase = ({ tabId, editData }) => {
         </div>
 
         {/* Combined Product Selection and Cart Section */}
-        <div className="card">
-          <div className="card-header">
-            <h3 className="text-base sm:text-lg font-medium text-gray-900">Product Selection & Cart</h3>
-          </div>
-          <div className="card-content">
-            {/* Product Search */}
-            <div className="mb-4 sm:mb-6">
-              <ProductSearch onAddProduct={addToPurchase} onRefetchReady={setRefetchProducts} />
-            </div>
-
-            {/* Cart Items */}
-            {purchaseItems.length === 0 ? (
-              <div className="p-6 sm:p-8 text-center text-gray-500 border-t border-gray-200">
-                <Package className="mx-auto h-10 w-10 sm:h-12 sm:w-12 text-gray-400" />
-                <p className="mt-2 text-sm sm:text-base">No items in cart</p>
-              </div>
-            ) : (
-              <div className="space-y-4 border-t border-gray-200 pt-4 sm:pt-6">
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0 mb-4">
-                  <h4 className="text-sm sm:text-md font-medium text-gray-700">Cart Items</h4>
-                  <Button
-                    type="button"
-                    onClick={handleSortPurchaseItems}
-                    variant="secondary"
-                    size="sm"
-                    className="flex items-center justify-center gap-2 w-full sm:w-auto"
-                    title="Sort products alphabetically"
-                  >
-                    <ArrowUpDown className="h-4 w-4" />
-                    <span>Sort A-Z</span>
-                  </Button>
-                </div>
-                {purchaseItems.map((item, index) => (
-                  <PurchaseItem
-                    key={item.product?._id}
-                    item={item}
-                    index={index}
-                    onUpdateQuantity={updateQuantity}
-                    onUpdateCost={updateCost}
-                    onRemove={removeFromPurchase}
-                  />
-                ))}
-              </div>
+        <ProductSelectionCartSection
+          headerActions={
+            purchaseItems.length > 0 ? (
+              <Button
+                type="button"
+                onClick={handleSortPurchaseItems}
+                variant="secondary"
+                size="sm"
+                className="flex items-center space-x-2"
+                title="Sort products alphabetically"
+              >
+                <ArrowUpDown className="h-4 w-4" />
+                <span>Sort A-Z</span>
+              </Button>
+            ) : null
+          }
+          searchSection={
+            <ProductSearch
+              onAddProduct={addToPurchase}
+              onRefetchReady={setRefetchProducts}
+              allowOutOfStock
+            />
+          }
+          isEmpty={purchaseItems.length === 0}
+          emptyIcon={Package}
+          emptyText="No items in cart"
+        >
+          <CartItemsTableSection
+            desktopHeader={(
+              <CartTableHeader
+                className={`hidden md:grid gap-x-1 items-center pb-2 border-b border-gray-300 mb-2 ${
+                  dualUnitShowBoxInputEnabledPage
+                    ? 'grid-cols-[2.25rem_minmax(0,1fr)_4.75rem_5.35rem_5.35rem_5.35rem_5.35rem_2.25rem]'
+                    : 'grid-cols-[2.25rem_minmax(0,1fr)_5.35rem_5.35rem_5.35rem_5.35rem_2.25rem]'
+                }`}
+                columns={[
+                  { key: 'sno', label: 'S.NO', labelClassName: 'text-xs font-semibold text-gray-600 uppercase text-left' },
+                  { key: 'product', label: 'Product' },
+                  ...(dualUnitShowBoxInputEnabledPage ? [{ key: 'box', label: 'Box' }] : []),
+                  { key: 'stock', label: 'Stock' },
+                  { key: 'qty', label: 'Qty' },
+                  { key: 'cost', label: 'Cost' },
+                  { key: 'total', label: 'Total', labelClassName: 'text-xs font-semibold text-gray-600 uppercase block text-center' },
+                  { key: 'action', label: 'Action', wrapperClassName: 'min-w-0 flex justify-end', labelClassName: 'text-xs font-semibold text-gray-600 uppercase text-right' },
+                ]}
+              />
             )}
-          </div>
-        </div>
+          >
+            {purchaseItems.map((item, index) => (
+              <PurchaseItem
+                key={item.product?._id}
+                item={item}
+                index={index}
+                onUpdateQuantity={updateQuantity}
+                onUpdateCost={updateCost}
+                onRemove={removeFromPurchase}
+                onUpdateCartBoxCount={updateCartBoxCount}
+                showProductImages={showProductImages}
+                setPreviewImageProduct={setPreviewImageProduct}
+              />
+            ))}
+          </CartItemsTableSection>
+        </ProductSelectionCartSection>
 
-        {/* Combined Purchase Details and Order Summary */}
+        {/* Purchase Details + Order Summary — same two-column pattern as Sales */}
         {purchaseItems.length > 0 && (
-          <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-lg w-full lg:max-w-5xl lg:ml-auto mt-4">
-            {/* Purchase Details Section */}
-            <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-blue-200">
-              <h3 className="text-base sm:text-lg font-medium text-gray-900 text-left sm:text-right mb-3 sm:mb-4">Purchase Details</h3>
-              {/* Single Row Layout for Purchase Details */}
-              <div className="flex flex-col sm:flex-row sm:flex-nowrap gap-3 sm:items-end sm:justify-end">
-                {/* Invoice Number */}
-                <div className="flex flex-col w-full sm:w-44">
-                  <label className="block text-xs font-medium text-gray-700 mb-1">
-                    Invoice Number
-                  </label>
-                  <input
-                    type="text"
-                    autoComplete="off"
-                    value={invoiceNumber}
-                    onChange={(e) => setInvoiceNumber(e.target.value)}
-                    className="input h-8 sm:h-8 text-sm"
-                    placeholder={autoGenerateInvoice ? "Auto-generated" : "Enter invoice number"}
-                    disabled={autoGenerateInvoice}
-                  />
-                </div>
-
-                {/* Expected Delivery */}
-                <div className="flex flex-col w-full sm:w-48">
-                  <label className="block text-xs font-medium text-gray-700 mb-1">
-                    Expected Delivery
-                  </label>
-                  <input
-                    type="date"
-                    autoComplete="off"
-                    value={expectedDelivery}
-                    onChange={(e) => setExpectedDelivery(e.target.value)}
-                    className="input h-8 sm:h-8 text-sm"
-                  />
-                </div>
-
-                {/* Bill Date (for backdating - same as Sale page) */}
-                <div className="flex flex-col w-full sm:w-48">
-                  <label className="block text-xs font-medium text-gray-700 mb-1">
-                    Bill Date <span className="text-xs text-gray-500">(Optional - for backdating)</span>
-                  </label>
-                  <input
-                    type="date"
-                    autoComplete="off"
-                    value={billDate}
-                    onChange={(e) => setBillDate(e.target.value)}
-                    className="input h-8 sm:h-8 text-sm"
-                    max={getLocalDateString()}
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Set custom date for backdating purchase
-                  </p>
-                </div>
-
-                {/* Tax Exemption Option */}
-                <div className="flex flex-col w-full sm:w-40">
-                  <label className="block text-xs font-medium text-gray-700 mb-1">
-                    Tax Status
-                  </label>
-                  <div className="flex items-center space-x-1 px-2 py-1 border border-gray-200 rounded h-8">
-                    <input
-                      type="checkbox"
-                      id="taxExempt"
-                      checked={taxExempt}
-                      onChange={(e) => setTaxExempt(e.target.checked)}
-                      className="h-3 w-3 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-                    />
-                    <div className="flex-1">
-                      <label htmlFor="taxExempt" className="text-xs font-medium text-gray-700 cursor-pointer">
-                        Tax Exempt
-                      </label>
-                    </div>
-                    {taxExempt && (
-                      <div className="text-green-600 text-xs font-medium">
-                        ✓
+          <div
+            className={`mt-4 grid w-full min-w-0 grid-cols-1 gap-4 lg:gap-5 lg:items-start ${
+              showPurchaseDetailsFields ? 'lg:grid-cols-2' : 'lg:grid-cols-1'
+            }`}
+          >
+            <OrderCheckoutCard
+              className={`mt-0 ml-0 max-w-none min-w-0 w-full border-slate-200 bg-none bg-slate-50 shadow-sm ring-0 ${
+                showPurchaseDetailsFields ? 'order-1' : 'order-2'
+              }`}
+            >
+              <OrderDetailsSection
+                detailsTitle="Purchase Details"
+                showDetails={showPurchaseDetailsFields}
+                onShowDetailsChange={setShowPurchaseDetailsFields}
+                checkboxId="showPurchaseDetailsFields"
+              >
+                {showPurchaseDetailsFields && (
+                  <>
+                    <div className="md:hidden space-y-3">
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-xs font-medium text-gray-700">Invoice Number</label>
+                          <label
+                            htmlFor="autoGenerateInvoicePurchaseMobile"
+                            className="flex items-center space-x-1 text-xs text-gray-600 cursor-pointer select-none"
+                          >
+                            <Input
+                              type="checkbox"
+                              id="autoGenerateInvoicePurchaseMobile"
+                              checked={autoGenerateInvoice}
+                              onChange={(e) => {
+                                setAutoGenerateInvoice(e.target.checked);
+                                if (e.target.checked && selectedSupplier) {
+                                  setInvoiceNumber(generateInvoiceNumber(selectedSupplier));
+                                }
+                              }}
+                              className="h-3.5 w-3.5 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                            />
+                            <span>Auto-generate</span>
+                          </label>
+                        </div>
+                        <div className="relative">
+                          <Input
+                            type="text"
+                            autoComplete="off"
+                            value={invoiceNumber}
+                            onChange={(e) => setInvoiceNumber(e.target.value)}
+                            className="w-full pr-20 h-10 text-sm"
+                            placeholder={autoGenerateInvoice ? 'Auto-generated' : 'Enter invoice number'}
+                            disabled={autoGenerateInvoice}
+                          />
+                          {autoGenerateInvoice && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (selectedSupplier) {
+                                  setInvoiceNumber(generateInvoiceNumber(selectedSupplier));
+                                }
+                              }}
+                              className="absolute right-2 top-1/2 transform -translate-y-1/2 text-xs text-primary-600 hover:text-primary-800 font-medium"
+                            >
+                              Regenerate
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    )}
+                      <div>
+                        <label className="block text-xs font-medium text-gray-700 mb-1">Expected Delivery</label>
+                        <Input
+                          type="date"
+                          autoComplete="off"
+                          value={expectedDelivery}
+                          onChange={(e) => setExpectedDelivery(e.target.value)}
+                          className="h-10 text-sm w-full"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-700 mb-1">
+                          Bill Date <span className="text-gray-500">(Optional)</span>
+                        </label>
+                        <Input
+                          type="date"
+                          autoComplete="off"
+                          value={billDate}
+                          onChange={(e) => setBillDate(e.target.value)}
+                          className="h-10 text-sm w-full"
+                          max={getLocalDateString()}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-700 mb-1">Tax Status</label>
+                        <div className="flex items-center space-x-2 px-3 py-2 border border-gray-200 rounded h-10">
+                          <Input
+                            type="checkbox"
+                            id="taxExemptPurchaseMobile"
+                            checked={taxExempt}
+                            onChange={(e) => setTaxExempt(e.target.checked)}
+                            className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                          />
+                          <div className="flex-1">
+                            <label htmlFor="taxExemptPurchaseMobile" className="text-sm font-medium text-gray-700 cursor-pointer">
+                              Tax Exempt
+                            </label>
+                          </div>
+                          {taxExempt && <div className="text-green-600 text-sm font-medium">✓</div>}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-700 mb-1">Notes</label>
+                        <Input
+                          type="text"
+                          autoComplete="off"
+                          value={notes}
+                          onChange={(e) => setNotes(e.target.value)}
+                          className="h-10 text-sm w-full"
+                          placeholder="Additional notes..."
+                        />
+                      </div>
+                    </div>
+
+                    <div className="hidden md:flex flex-wrap gap-3 items-end justify-start">
+                      <div className="flex flex-col w-72">
+                        <div className="flex items-center gap-3 mb-1">
+                          <label className="block text-xs font-medium text-gray-700 m-0">Invoice Number</label>
+                          <label
+                            htmlFor="autoGenerateInvoicePurchase"
+                            className="flex items-center space-x-1 text-[11px] text-gray-600 cursor-pointer select-none"
+                          >
+                            <Input
+                              type="checkbox"
+                              id="autoGenerateInvoicePurchase"
+                              checked={autoGenerateInvoice}
+                              onChange={(e) => {
+                                setAutoGenerateInvoice(e.target.checked);
+                                if (e.target.checked && selectedSupplier) {
+                                  setInvoiceNumber(generateInvoiceNumber(selectedSupplier));
+                                }
+                              }}
+                              className="h-3 w-3 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                            />
+                            <span>Auto-generate</span>
+                          </label>
+                        </div>
+                        <div className="relative">
+                          <Input
+                            type="text"
+                            autoComplete="off"
+                            value={invoiceNumber}
+                            onChange={(e) => setInvoiceNumber(e.target.value)}
+                            className="w-full pr-16 h-8 text-sm"
+                            placeholder={autoGenerateInvoice ? 'Auto-generated' : 'Enter invoice number'}
+                            disabled={autoGenerateInvoice}
+                          />
+                          {autoGenerateInvoice && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (selectedSupplier) {
+                                  setInvoiceNumber(generateInvoiceNumber(selectedSupplier));
+                                }
+                              }}
+                              className="absolute right-2 top-1/2 transform -translate-y-1/2 text-[11px] text-primary-600 hover:text-primary-800 font-medium"
+                            >
+                              Regenerate
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex flex-col w-44">
+                        <label className="block text-xs font-medium text-gray-700 mb-1">Expected Delivery</label>
+                        <Input
+                          type="date"
+                          autoComplete="off"
+                          value={expectedDelivery}
+                          onChange={(e) => setExpectedDelivery(e.target.value)}
+                          className="h-8 text-sm"
+                        />
+                      </div>
+                      <div className="flex flex-col w-44">
+                        <label className="block text-xs font-medium text-gray-700 mb-1">
+                          Bill Date <span className="text-gray-500">(Optional)</span>
+                        </label>
+                        <Input
+                          type="date"
+                          autoComplete="off"
+                          value={billDate}
+                          onChange={(e) => setBillDate(e.target.value)}
+                          className="h-8 text-sm"
+                          max={getLocalDateString()}
+                        />
+                      </div>
+                      <div className="flex flex-col w-40">
+                        <label className="block text-xs font-medium text-gray-700 mb-1">Tax Status</label>
+                        <div className="flex items-center space-x-1 px-2 py-1 border border-gray-200 rounded h-8">
+                          <Input
+                            type="checkbox"
+                            id="taxExemptPurchase"
+                            checked={taxExempt}
+                            onChange={(e) => setTaxExempt(e.target.checked)}
+                            className="h-3 w-3 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                          />
+                          <div className="flex-1">
+                            <label htmlFor="taxExemptPurchase" className="text-xs font-medium text-gray-700 cursor-pointer">
+                              Tax Exempt
+                            </label>
+                          </div>
+                          {taxExempt && <div className="text-green-600 text-xs font-medium">✓</div>}
+                        </div>
+                      </div>
+                      <div className="flex min-w-0 flex-1 flex-col basis-[min(100%,20rem)]">
+                        <label className="block text-xs font-medium text-gray-700 mb-1">Notes</label>
+                        <Input
+                          type="text"
+                          autoComplete="off"
+                          value={notes}
+                          onChange={(e) => setNotes(e.target.value)}
+                          className="h-8 w-full min-w-0 text-sm"
+                          placeholder="Additional notes..."
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
+              </OrderDetailsSection>
+            </OrderCheckoutCard>
+
+            <OrderCheckoutCard
+              className={`mt-0 ml-0 max-w-none min-w-0 w-full border-slate-200 bg-none bg-slate-50 shadow-sm ring-0 ${
+                showPurchaseDetailsFields ? 'order-2' : 'order-1'
+              }`}
+            >
+              <OrderSummaryContent className="bg-none bg-slate-50">
+                <div className="space-y-2">
+                  {directDiscountAmount > 0 && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-muted-foreground">Discount:</span>
+                      <span className="text-xl font-semibold tabular-nums text-red-600">
+                        -{directDiscountAmount.toFixed(2)}
+                      </span>
+                    </div>
+                  )}
+                  {!taxExempt && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-muted-foreground">Tax:</span>
+                      <span className="text-xl font-semibold tabular-nums text-foreground">{tax.toFixed(2)}</span>
+                    </div>
+                  )}
+                  <div className="mt-2">
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-4 md:gap-4">
+                      <div className="flex items-center justify-between md:block">
+                        <span className="text-sm font-medium text-muted-foreground">Subtotal:</span>
+                        <div className="text-2xl font-semibold tabular-nums text-foreground md:mt-1">{subtotal.toFixed(2)}</div>
+                      </div>
+                      <div className="flex items-center justify-between md:block">
+                        <span className="text-sm font-medium text-muted-foreground">Purchase Total:</span>
+                        <div className="text-2xl font-bold tabular-nums text-primary md:mt-1">{total.toFixed(2)}</div>
+                      </div>
+                      <div className="flex items-center justify-between md:block">
+                        <span className="text-sm font-medium text-muted-foreground">Previous Outstanding:</span>
+                        <div
+                          className={`text-2xl font-semibold tabular-nums md:mt-1 ${
+                            supplierOutstanding > 0 ? 'text-red-600' : 'text-green-600'
+                          }`}
+                        >
+                          {supplierOutstanding.toFixed(2)}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between md:block">
+                        <span className="text-sm font-semibold text-foreground">Total Payables:</span>
+                        <div className="text-2xl font-bold tabular-nums text-primary md:mt-1">{totalPayables.toFixed(2)}</div>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                {/* Notes */}
-                <div className="flex flex-col w-full sm:w-[28rem]">
-                  <label className="block text-xs font-medium text-gray-700 mb-1">
-                    Notes
-                  </label>
-                  <input
-                    type="text"
-                    autoComplete="off"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    className="input h-8 sm:h-8 text-sm"
-                    placeholder="Additional notes..."
-                  />
-                </div>
-              </div>
-            </div>
+                <OrderInsetPanel>
+                  <div className="grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-3 items-start">
+                    <div className="flex flex-col">
+                      <label className="block text-sm font-medium text-foreground mb-2">Apply Discount (manual)</label>
+                      <div className="flex space-x-2">
+                        <select
+                          value={directDiscount.type}
+                          onChange={(e) => setDirectDiscount({ ...directDiscount, type: e.target.value })}
+                          className="h-10 px-3 border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-ring font-medium"
+                        >
+                          <option value="amount">Amount</option>
+                          <option value="percentage">%</option>
+                        </select>
+                        <Input
+                          type="number"
+                          autoComplete="off"
+                          placeholder={directDiscount.type === 'amount' ? 'Enter amount...' : 'Enter percentage...'}
+                          value={directDiscount.value || ''}
+                          onChange={(e) => {
+                            const value = parseFloat(e.target.value) || 0;
+                            setDirectDiscount({ ...directDiscount, value });
+                          }}
+                          className="flex-1 h-10 px-3 border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-ring font-medium text-foreground"
+                          min="0"
+                          step={directDiscount.type === 'percentage' ? '0.1' : '0.01'}
+                        />
+                      </div>
+                      {directDiscount.value > 0 && (
+                        <div className="mt-2">
+                          <Button
+                            onClick={() => setDirectDiscount({ type: 'amount', value: 0 })}
+                            variant="destructive"
+                            size="sm"
+                          >
+                            Clear Discount
+                          </Button>
+                        </div>
+                      )}
+                    </div>
 
-            {/* Order Summary Section */}
-            <div className="bg-gradient-to-r from-blue-500 to-indigo-600 px-4 sm:px-6 py-3 sm:py-4">
-              <h3 className="text-base sm:text-lg font-semibold text-white">Order Summary</h3>
-            </div>
-
-            {/* Order Summary Details */}
-            <div className="px-4 sm:px-6 py-3 sm:py-4">
-              <div className="space-y-3 mb-4 sm:mb-6">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm sm:text-base text-gray-800 font-semibold">Subtotal:</span>
-                  <span className="text-lg sm:text-xl font-bold text-gray-900">{subtotal.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm sm:text-base text-gray-800 font-semibold">
-                    {taxExempt ? 'Tax (Exempt):' : 'Tax (8%):'}
-                  </span>
-                  <span className="text-lg sm:text-xl font-bold text-gray-900">{tax.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm sm:text-base text-gray-800 font-semibold">Purchase Total:</span>
-                  <span className="text-lg sm:text-xl font-bold text-gray-900">{total.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm sm:text-base text-gray-800 font-semibold">Previous Outstanding:</span>
-                  <span className="text-lg sm:text-xl font-bold text-red-600">{supplierOutstanding.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between items-center text-base sm:text-xl font-bold border-t-2 border-blue-400 pt-3 mt-2">
-                  <span className="text-blue-900">Total Payables:</span>
-                  <span className="text-blue-900 text-2xl sm:text-3xl">{totalPayables.toFixed(2)}</span>
-                </div>
-
-              </div>
-
-              {/* Payment and Discount Section - One Row */}
-              <div className="bg-white rounded-lg p-3 sm:p-4 shadow-sm">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 sm:gap-4 items-start">
-                  {/* Apply Discount */}
-                  <div className="flex flex-col">
-                    <label className="block text-xs sm:text-sm font-semibold text-gray-800 mb-2">
-                      Apply Discount
-                    </label>
-                    <div className="flex space-x-2">
+                    <div className="flex flex-col md:col-start-2 md:row-start-1 w-full">
+                      <label className="block text-sm font-medium text-foreground mb-2">Payment Method</label>
                       <select
-                        value={directDiscount.type}
-                        onChange={(e) => setDirectDiscount({ ...directDiscount, type: e.target.value })}
-                        className="px-2 sm:px-3 py-2 text-xs sm:text-sm border-2 border-blue-200 rounded-md bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-medium h-[42px]"
+                        value={paymentMethod}
+                        onChange={(e) => setPaymentMethod(e.target.value)}
+                        className="w-full h-10 px-3 border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-ring font-medium text-foreground"
                       >
-                        <option value="amount">Amount</option>
-                        <option value="percentage">%</option>
+                        <option value="cash">Cash</option>
+                        <option value="credit_card">Credit Card</option>
+                        <option value="debit_card">Debit Card</option>
+                        <option value="check">Check</option>
                       </select>
-                      <input
+                    </div>
+
+                    <div className="flex flex-col">
+                      <label className="block text-sm font-medium text-foreground mb-2">Amount Paid</label>
+                      <Input
                         type="number"
+                        step="0.01"
                         autoComplete="off"
-                        placeholder={directDiscount.type === 'amount' ? 'Enter amount...' : 'Enter percentage...'}
-                        value={directDiscount.value || ''}
-                        onChange={(e) => {
-                          const value = parseFloat(e.target.value) || 0;
-                          setDirectDiscount({ ...directDiscount, value });
-                        }}
-                        className="flex-1 px-2 sm:px-3 py-2 text-xs sm:text-sm border-2 border-blue-200 rounded-md bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-medium text-gray-900 h-[42px]"
-                        min="0"
-                        step={directDiscount.type === 'percentage' ? '0.1' : '0.01'}
+                        value={amountPaid}
+                        onChange={(e) => setAmountPaid(parseFloat(e.target.value) || 0)}
+                        onFocus={(e) => e.target.select()}
+                        className="w-full h-10 px-3 border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-ring font-medium text-foreground text-lg"
+                        placeholder="0.00"
                       />
                     </div>
-                    {directDiscount.value > 0 && (
-                      <div className="text-xs sm:text-sm text-green-700 font-semibold mt-2 bg-green-50 px-2 py-1 rounded">
-                        {directDiscount.type === 'percentage'
-                          ? `${directDiscount.value}% = ${directDiscountAmount.toFixed(2)} off`
-                          : `${directDiscount.value} off`
-                        }
-                      </div>
-                    )}
                   </div>
+                </OrderInsetPanel>
 
-                  {/* Payment Method */}
-                  <div className="flex flex-col">
-                    <label className="block text-xs sm:text-sm font-semibold text-gray-800 mb-2">
-                      Payment Method
-                    </label>
-                    <select
-                      value={paymentMethod}
-                      onChange={(e) => setPaymentMethod(e.target.value)}
-                      className="w-full px-2 sm:px-3 py-2 text-xs sm:text-sm border-2 border-blue-200 rounded-md bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-medium text-gray-900 h-[42px]"
-                    >
-                      <option value="cash">Cash</option>
-                      <option value="credit_card">Credit Card</option>
-                      <option value="debit_card">Debit Card</option>
-                      <option value="check">Check</option>
-                    </select>
-                  </div>
-
-                  {/* Amount Paid */}
-                  <div className="flex flex-col">
-                    <label className="block text-xs sm:text-sm font-semibold text-gray-800 mb-2">
-                      Amount Paid
-                    </label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      autoComplete="off"
-                      value={amountPaid}
-                      onChange={(e) => setAmountPaid(parseFloat(e.target.value) || 0)}
-                      onFocus={(e) => e.target.select()}
-                      className="w-full px-2 sm:px-3 py-2 text-sm sm:text-base border-2 border-blue-200 rounded-md bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-medium text-gray-900 h-[42px]"
-                      placeholder="0.00"
-                    />
-                  </div>
-                </div>
-
-                {/* Clear Discount Button */}
-                {directDiscount.value > 0 && (
-                  <div className="mt-2">
+                <OrderCheckoutActions>
+                  {purchaseItems.length > 0 && (
                     <Button
-                      onClick={() => setDirectDiscount({ type: 'amount', value: 0 })}
-                      variant="destructive"
-                      size="sm"
+                      onClick={() => {
+                        setPurchaseItems([]);
+                        setSelectedSupplier(null);
+                        setSupplierSearchTerm('');
+                        setTaxExempt(true);
+                        setDirectDiscount({ type: 'amount', value: 0 });
+                        setAmountPaid(0);
+                        setPaymentMethod('cash');
+                        setBillDate(getLocalDateString());
+                        toast.success('Cart cleared');
+                      }}
+                      variant="secondary"
+                      className="flex-1"
                     >
-                      Clear Discount
+                      <Trash2 className="h-4 w-4 mr-2" />
+                      Clear Cart
                     </Button>
-                  </div>
+                  )}
+                  {purchaseItems.length > 0 && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="secondary" className="flex-1">
+                          <Printer className="h-4 w-4 mr-2" />
+                          Print
+                          <ChevronDown className="h-4 w-4 ml-2" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        <DropdownMenuItem
+                          onClick={() => {
+                            const supplierInfoForPrint = selectedSupplier ? {
+                              name: selectedSupplier.companyName || selectedSupplier.company_name || selectedSupplier.businessName || selectedSupplier.business_name || selectedSupplier.displayName || selectedSupplier.name,
+                              email: selectedSupplier.email,
+                              phone: selectedSupplier.phone,
+                              address: (() => {
+                                if (typeof selectedSupplier.address === 'string' && selectedSupplier.address.trim()) return selectedSupplier.address.trim();
+                                const addr = selectedSupplier.address || selectedSupplier.companyAddress || selectedSupplier.location;
+                                if (addr && typeof addr === 'object') {
+                                  const parts = [addr.street || addr.address_line1 || addr.addressLine1 || addr.line1, addr.address_line2 || addr.addressLine2, addr.city, addr.province || addr.state, addr.country, addr.zipCode || addr.zip || addr.postalCode || addr.postal_code].filter(Boolean);
+                                  if (parts.length) return parts.join(', ');
+                                }
+                                if (selectedSupplier.addresses?.length) {
+                                  const a = selectedSupplier.addresses.find(x => x.isDefault) || selectedSupplier.addresses.find(x => x.type === 'billing' || x.type === 'both') || selectedSupplier.addresses[0];
+                                  const parts = [a.street || a.address_line1 || a.addressLine1, a.city, a.province || a.state, a.country, a.zipCode || a.zip].filter(Boolean);
+                                  if (parts.length) return parts.join(', ');
+                                }
+                                return null;
+                              })(),
+                              businessName: selectedSupplier.businessName || selectedSupplier.business_name || selectedSupplier.companyName
+                            } : null;
+                            const tempOrder = {
+                              orderNumber: `PO-${Date.now()}`,
+                              orderType: 'purchase',
+                              supplier: selectedSupplier,
+                              supplierInfo: supplierInfoForPrint,
+                              customer: selectedSupplier,
+                              customerInfo: supplierInfoForPrint,
+                              items: purchaseItems.map(item => {
+                                const product = item.product || {};
+                                const displayName = product.isVariant
+                                  ? (product.displayName || product.variantName || product.name || 'Unknown Variant')
+                                  : (product.name || 'Unknown Product');
+
+                                return {
+                                  product: {
+                                    name: displayName,
+                                    isVariant: product.isVariant,
+                                    variantType: product.variantType,
+                                    variantValue: product.variantValue,
+                                    ...(product.barcode ? { barcode: product.barcode } : {}),
+                                    ...(product.sku ? { sku: product.sku } : {})
+                                  },
+                                  quantity: item.quantity,
+                                  unitPrice: item.costPerUnit
+                                };
+                              }),
+                              pricing: {
+                                subtotal: subtotal,
+                                discountAmount: directDiscountAmount,
+                                taxAmount: tax,
+                                isTaxExempt: taxExempt,
+                                total: total
+                              },
+                              payment: {
+                                method: paymentMethod,
+                                amountPaid: amountPaid,
+                                remainingBalance: total - amountPaid,
+                                isPartialPayment: amountPaid < total
+                              },
+                              createdAt: new Date(),
+                              createdBy: { name: 'Current User' },
+                              invoiceNumber: invoiceNumber,
+                              expectedDelivery: expectedDelivery,
+                              notes: notes
+                            };
+                            setDirectPrintOrder(tempOrder);
+                          }}
+                        >
+                          <Printer className="h-4 w-4 mr-2" />
+                          Print
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => {
+                            const supplierInfoForPrint = selectedSupplier ? {
+                              name: selectedSupplier.companyName || selectedSupplier.company_name || selectedSupplier.businessName || selectedSupplier.business_name || selectedSupplier.displayName || selectedSupplier.name,
+                              email: selectedSupplier.email,
+                              phone: selectedSupplier.phone,
+                              address: (() => {
+                                if (typeof selectedSupplier.address === 'string' && selectedSupplier.address.trim()) return selectedSupplier.address.trim();
+                                const addr = selectedSupplier.address || selectedSupplier.companyAddress || selectedSupplier.location;
+                                if (addr && typeof addr === 'object') {
+                                  const parts = [addr.street || addr.address_line1 || addr.addressLine1 || addr.line1, addr.address_line2 || addr.addressLine2, addr.city, addr.province || addr.state, addr.country, addr.zipCode || addr.zip || addr.postalCode || addr.postal_code].filter(Boolean);
+                                  if (parts.length) return parts.join(', ');
+                                }
+                                if (selectedSupplier.addresses?.length) {
+                                  const a = selectedSupplier.addresses.find(x => x.isDefault) || selectedSupplier.addresses.find(x => x.type === 'billing' || x.type === 'both') || selectedSupplier.addresses[0];
+                                  const parts = [a.street || a.address_line1 || a.addressLine1, a.city, a.province || a.state, a.country, a.zipCode || a.zip].filter(Boolean);
+                                  if (parts.length) return parts.join(', ');
+                                }
+                                return null;
+                              })(),
+                              businessName: selectedSupplier.businessName || selectedSupplier.business_name || selectedSupplier.companyName
+                            } : null;
+                            const tempOrder = {
+                              orderNumber: `PO-${Date.now()}`,
+                              orderType: 'purchase',
+                              supplier: selectedSupplier,
+                              supplierInfo: supplierInfoForPrint,
+                              customer: selectedSupplier,
+                              customerInfo: supplierInfoForPrint,
+                              items: purchaseItems.map(item => {
+                                const product = item.product || {};
+                                const displayName = product.isVariant
+                                  ? (product.displayName || product.variantName || product.name || 'Unknown Variant')
+                                  : (product.name || 'Unknown Product');
+
+                                return {
+                                  product: {
+                                    name: displayName,
+                                    isVariant: product.isVariant,
+                                    variantType: product.variantType,
+                                    variantValue: product.variantValue,
+                                    ...(product.barcode ? { barcode: product.barcode } : {}),
+                                    ...(product.sku ? { sku: product.sku } : {})
+                                  },
+                                  quantity: item.quantity,
+                                  unitPrice: item.costPerUnit
+                                };
+                              }),
+                              pricing: {
+                                subtotal: subtotal,
+                                discountAmount: directDiscountAmount,
+                                taxAmount: tax,
+                                isTaxExempt: taxExempt,
+                                total: total
+                              },
+                              payment: {
+                                method: paymentMethod,
+                                amountPaid: amountPaid,
+                                remainingBalance: total - amountPaid,
+                                isPartialPayment: amountPaid < total
+                              },
+                              createdAt: new Date(),
+                              createdBy: { name: 'Current User' },
+                              invoiceNumber: invoiceNumber,
+                              expectedDelivery: expectedDelivery,
+                              notes: notes
+                            };
+                            setCurrentOrder(tempOrder);
+                            setShowPrintModal(true);
+                          }}
+                        >
+                          <Eye className="h-4 w-4 mr-2" />
+                          Print Preview
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
+                  {!editData?.isEditMode && purchaseItems.length > 0 && (
+                    <label className="flex items-center space-x-2 px-2 text-sm font-medium text-gray-700 cursor-pointer">
+                      <Input
+                        type="checkbox"
+                        checked={printBarcodeLabelsAfterInvoice}
+                        onChange={(e) => setPrintBarcodeLabelsAfterInvoice(e.target.checked)}
+                        className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                      />
+                      <span>Print labels after purchase</span>
+                    </label>
                 )}
-              </div>
-
-            </div>
-
-            {/* Action Buttons */}
-            <div className="flex flex-col-reverse sm:flex-row gap-3 mt-4 sm:mt-6 px-4 sm:px-6 pb-4 sm:pb-6">
-              {purchaseItems.length > 0 && (
-                <Button
-                  onClick={() => {
-                    setPurchaseItems([]);
-                    setSelectedSupplier(null);
-                    setSupplierSearchTerm('');
-                    setTaxExempt(true);
-                    setDirectDiscount({ type: 'amount', value: 0 });
-                    setAmountPaid(0);
-                    setPaymentMethod('cash');
-                    setBillDate(getLocalDateString()); // Reset Bill Date
-                    toast.success('Cart cleared');
-                  }}
-                  variant="secondary"
-                  size="default"
-                  className="flex items-center justify-center gap-2 w-full sm:flex-1"
+                <LoadingButton
+                  onClick={handleProcessPurchase}
+                  isLoading={false}
+                  variant="default"
+                  size="lg"
+                  className="flex-2"
                 >
-                  <Trash2 className="h-4 w-4" />
-                  <span>Clear Cart</span>
-                </Button>
-              )}
-              {purchaseItems.length > 0 && (
-                <Button
-                  onClick={() => {
-                    const supplierInfoForPrint = selectedSupplier ? {
-                        name: selectedSupplier.companyName || selectedSupplier.company_name || selectedSupplier.businessName || selectedSupplier.business_name || selectedSupplier.displayName || selectedSupplier.name,
-                        email: selectedSupplier.email,
-                        phone: selectedSupplier.phone,
-                        address: (() => {
-                          if (typeof selectedSupplier.address === 'string' && selectedSupplier.address.trim()) return selectedSupplier.address.trim();
-                          const addr = selectedSupplier.address || selectedSupplier.companyAddress || selectedSupplier.location;
-                          if (addr && typeof addr === 'object') {
-                            const parts = [addr.street || addr.address_line1 || addr.addressLine1 || addr.line1, addr.address_line2 || addr.addressLine2, addr.city, addr.province || addr.state, addr.country, addr.zipCode || addr.zip || addr.postalCode || addr.postal_code].filter(Boolean);
-                            if (parts.length) return parts.join(', ');
-                          }
-                          if (selectedSupplier.addresses?.length) {
-                            const a = selectedSupplier.addresses.find(x => x.isDefault) || selectedSupplier.addresses.find(x => x.type === 'billing' || x.type === 'both') || selectedSupplier.addresses[0];
-                            const parts = [a.street || a.address_line1 || a.addressLine1, a.city, a.province || a.state, a.country, a.zipCode || a.zip].filter(Boolean);
-                            if (parts.length) return parts.join(', ');
-                          }
-                          return null;
-                        })(),
-                        businessName: selectedSupplier.businessName || selectedSupplier.business_name || selectedSupplier.companyName
-                      } : null;
-                    const tempOrder = {
-                      orderNumber: `PO-${Date.now()}`,
-                      orderType: 'purchase',
-                      supplier: selectedSupplier,
-                      supplierInfo: supplierInfoForPrint,
-                      customer: selectedSupplier,
-                      customerInfo: supplierInfoForPrint,
-                      items: purchaseItems.map(item => {
-                        const product = item.product || {};
-                        const displayName = product.isVariant
-                          ? (product.displayName || product.variantName || product.name || 'Unknown Variant')
-                          : (product.name || 'Unknown Product');
-
-                        return {
-                          product: {
-                            name: displayName,
-                            isVariant: product.isVariant,
-                            variantType: product.variantType,
-                            variantValue: product.variantValue
-                          },
-                          quantity: item.quantity,
-                          unitPrice: item.costPerUnit
-                        };
-                      }),
-                      pricing: {
-                        subtotal: subtotal,
-                        discountAmount: directDiscountAmount,
-                        taxAmount: tax,
-                        isTaxExempt: taxExempt,
-                        total: total
-                      },
-                      payment: {
-                        method: paymentMethod,
-                        amountPaid: amountPaid,
-                        remainingBalance: total - amountPaid,
-                        isPartialPayment: amountPaid < total
-                      },
-                      createdAt: new Date(),
-                      createdBy: { name: 'Current User' },
-                      invoiceNumber: invoiceNumber,
-                      expectedDelivery: expectedDelivery,
-                      notes: notes
-                    };
-                    setCurrentOrder(tempOrder);
-                    setShowPrintModal(true);
-                  }}
-                  variant="secondary"
-                  size="default"
-                  className="flex items-center justify-center gap-2 w-full sm:flex-1"
-                >
-                  <Receipt className="h-4 w-4" />
-                  <span>Print Preview</span>
-                </Button>
-              )}
-              <LoadingButton
-                onClick={handleProcessPurchase}
-                isLoading={false}
-                variant="default"
-                size="lg"
-                className="flex items-center justify-center gap-2 w-full sm:flex-2"
-              >
-                <Truck className="h-4 w-4" />
-                <span className="hidden sm:inline">{editData?.isEditMode ? 'Update Purchase Invoice' : 'Complete Purchase & Update Inventory'}</span>
-                <span className="sm:hidden">{editData?.isEditMode ? 'Update' : 'Complete Purchase'}</span>
-              </LoadingButton>
-            </div>
+                  <Truck className="h-4 w-4 mr-2" />
+                  {editData?.isEditMode ? 'Update Purchase Invoice' : 'Complete Purchase & Update Inventory'}
+                </LoadingButton>
+              </OrderCheckoutActions>
+            </OrderSummaryContent>
+          </OrderCheckoutCard>
           </div>
+        )}
+
+        {directPrintOrder && (
+          <DirectPrintInvoice
+            orderData={directPrintOrder}
+            documentTitle="Purchase Invoice"
+            partyLabel="Supplier"
+            onComplete={() => setDirectPrintOrder(null)}
+          />
         )}
 
         {/* Print Modal */}
@@ -1948,163 +1872,37 @@ export const Purchase = ({ tabId, editData }) => {
           partyLabel="Supplier"
         />
 
-        {/* Export Format Selection Modal */}
-        {showExportModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-lg shadow-xl max-w-lg w-full">
-              <div className="flex justify-between items-center p-6 border-b border-gray-200">
-                <h2 className="text-xl font-semibold text-gray-900">Export Purchase Report</h2>
-                <button
-                  onClick={() => {
-                    setShowExportModal(false);
-                    setExportDateFrom('');
-                    setExportDateTo('');
-                  }}
-                  className="text-gray-400 hover:text-gray-600 transition-colors"
-                >
-                  <XCircle className="h-6 w-6" />
-                </button>
-              </div>
-
-              <div className="p-6">
-                <div className="space-y-6">
-                  {/* Export Format */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-3">
-                      Export Format
-                    </label>
-                    <div className="grid grid-cols-2 gap-3">
-                      <label className="flex items-center p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                        <input
-                          type="radio"
-                          name="format"
-                          value="pdf"
-                          checked={exportFormat === 'pdf'}
-                          onChange={(e) => setExportFormat(e.target.value)}
-                          className="mr-3"
-                        />
-                        <div>
-                          <div className="font-medium text-gray-900">PDF</div>
-                          <div className="text-sm text-gray-500">Print-ready format</div>
-                        </div>
-                      </label>
-
-                      <label className="flex items-center p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                        <input
-                          type="radio"
-                          name="format"
-                          value="excel"
-                          checked={exportFormat === 'excel'}
-                          onChange={(e) => setExportFormat(e.target.value)}
-                          className="mr-3"
-                        />
-                        <div>
-                          <div className="font-medium text-gray-900">Excel</div>
-                          <div className="text-sm text-gray-500">Spreadsheet format</div>
-                        </div>
-                      </label>
-
-                      <label className="flex items-center p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                        <input
-                          type="radio"
-                          name="format"
-                          value="csv"
-                          checked={exportFormat === 'csv'}
-                          onChange={(e) => setExportFormat(e.target.value)}
-                          className="mr-3"
-                        />
-                        <div>
-                          <div className="font-medium text-gray-900">CSV</div>
-                          <div className="text-sm text-gray-500">Comma-separated values</div>
-                        </div>
-                      </label>
-
-                      <label className="flex items-center p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                        <input
-                          type="radio"
-                          name="format"
-                          value="json"
-                          checked={exportFormat === 'json'}
-                          onChange={(e) => setExportFormat(e.target.value)}
-                          className="mr-3"
-                        />
-                        <div>
-                          <div className="font-medium text-gray-900">JSON</div>
-                          <div className="text-sm text-gray-500">Data format</div>
-                        </div>
-                      </label>
-                    </div>
-                  </div>
-
-                  {/* Date Range Selection */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-3">
-                      Date Range (Optional)
-                    </label>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs text-gray-600 mb-1">From Date</label>
-                        <input
-                          type="date"
-                          autoComplete="off"
-                          value={exportDateFrom}
-                          onChange={(e) => setExportDateFrom(e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs text-gray-600 mb-1">To Date</label>
-                        <input
-                          type="date"
-                          autoComplete="off"
-                          value={exportDateTo}
-                          onChange={(e) => setExportDateTo(e.target.value)}
-                          min={exportDateFrom}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-                        />
-                      </div>
-                    </div>
-                    {(exportDateFrom || exportDateTo) && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setExportDateFrom('');
-                          setExportDateTo('');
-                        }}
-                        className="mt-2 text-sm text-primary-600 hover:text-primary-700"
-                      >
-                        Clear dates
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Action Buttons */}
-                  <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
-                    <button
-                      onClick={() => {
-                        setShowExportModal(false);
-                        setExportDateFrom('');
-                        setExportDateTo('');
-                      }}
-                      className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
-                      disabled={isExporting}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleExportConfirm}
-                      disabled={isExporting}
-                      className="px-4 py-2 text-sm font-medium text-white bg-primary-600 border border-transparent rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {isExporting ? 'Exporting...' : 'Export'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+        {showReceiptLabelPrinter && (
+          <BarcodeLabelPrinter
+            products={receiptLabelProducts}
+            quantityMode={true}
+            onClose={() => {
+              setShowReceiptLabelPrinter(false);
+              setReceiptLabelProducts([]);
+            }}
+          />
         )}
+
+        {/* Product Image Preview Modal */}
+        <BaseModal
+          isOpen={!!previewImageProduct}
+          onClose={() => setPreviewImageProduct(null)}
+          title={previewImageProduct?.displayName || previewImageProduct?.variantName || previewImageProduct?.name || 'Product Image'}
+        >
+          <div className="flex justify-center items-center bg-gray-50 rounded-lg overflow-hidden min-h-[300px] p-4">
+            {previewImageProduct?.imageUrl ? (
+              <img 
+                src={previewImageProduct.imageUrl} 
+                alt="Product Preview" 
+                className="max-w-full max-h-[70vh] object-contain"
+              />
+            ) : (
+              <div className="text-gray-400">No image available</div>
+            )}
+          </div>
+        </BaseModal>
+
       </div>
-    </>
+    </AsyncErrorBoundary>
   );
 };

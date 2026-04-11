@@ -1,6 +1,5 @@
 import React, { useMemo } from 'react';
 import { formatQuantityDisplay } from '../utils/dualUnitUtils';
-import { OptimizedImage } from './OptimizedImage';
 
 const PrintDocument = ({
     companySettings,
@@ -44,8 +43,14 @@ const PrintDocument = ({
         (typeof window !== 'undefined' && window.innerWidth <= 768);
     const isSale = (partyLabel?.toLowerCase() || '').includes('customer');
     const isPurchase = (partyLabel?.toLowerCase() || '').includes('supplier');
-    const saleOrPurchaseClass = invoiceLayout !== 'receipt' ? (isSale ? ' print-document--sale' : isPurchase ? ' print-document--purchase' : '') : '';
-    const printClassName = `print-document${invoiceLayout === 'layout2' ? ' print-document--layout2' : ''}${invoiceLayout === 'receipt' ? ' print-document--receipt' : ''}${isMobileLayout ? ' print-document--mobile' : ''}${saleOrPurchaseClass}`;
+    const isReceipt = invoiceLayout === 'receipt';
+    const isBank = (documentTitle?.toLowerCase() || resolvedDocumentTitle?.toLowerCase() || '').includes('bank');
+    const isCash = (documentTitle?.toLowerCase() || resolvedDocumentTitle?.toLowerCase() || '').includes('cash');
+
+    const saleOrPurchaseClass = !isReceipt ? (isSale ? ' print-document--sale' : isPurchase ? ' print-document--purchase' : '') : '';
+    const receiptTypeClass = isReceipt ? (isBank ? ' print-document--bank' : isCash ? ' print-document--cash' : '') : '';
+
+    const printClassName = `print-document${invoiceLayout === 'layout2' ? ' print-document--layout2' : ''}${isReceipt ? ' print-document--receipt' : ''}${isMobileLayout ? ' print-document--mobile' : ''}${saleOrPurchaseClass}${receiptTypeClass}`;
 
     const formatDate = (date) =>
         new Date(date || new Date()).toLocaleDateString('en-GB', {
@@ -77,6 +82,16 @@ const PrintDocument = ({
         if (value === undefined || value === null) return fallback;
         const num = typeof value === 'number' ? value : parseFloat(value);
         return Number.isFinite(num) ? num : fallback;
+    };
+
+    /** Barcode preferred; SKU as fallback for label printing / purchase lines */
+    const getLineBarcodeDisplay = (item) => {
+        const p = item.product || item.productData || {};
+        const barcode = (p.barcode ?? item.barcode ?? '').toString().trim();
+        if (barcode) return { label: 'Barcode', value: barcode };
+        const sku = (p.sku ?? item.sku ?? '').toString().trim();
+        if (sku) return { label: 'SKU', value: sku };
+        return null;
     };
 
     const formatText = (value, fallback = 'N/A') =>
@@ -123,33 +138,33 @@ const PrintDocument = ({
         const isSupplier = (partyLabel?.toLowerCase() || '').includes('supplier');
         const composedName = isCustomer
             ? (customer.businessName ||
-               customer.business_name ||
-               orderData.customerInfo?.businessName ||
-               orderData.customerInfo?.business_name ||
-               customer.companyName ||
-               customer.name ||
-               customer.displayName ||
-               customer.fullName ||
-               '—')
+                customer.business_name ||
+                orderData.customerInfo?.businessName ||
+                orderData.customerInfo?.business_name ||
+                customer.companyName ||
+                customer.name ||
+                customer.displayName ||
+                customer.fullName ||
+                '—')
             : isSupplier
-            ? (customer.companyName ||
-               customer.company_name ||
-               customer.businessName ||
-               customer.business_name ||
-               orderData.supplierInfo?.companyName ||
-               orderData.supplierInfo?.businessName ||
-               orderData.supplierInfo?.business_name ||
-               customer.name ||
-               customer.displayName ||
-               customer.fullName ||
-               '—')
-            : (customer.name ||
-               customer.displayName ||
-               customer.businessName ||
-               customer.business_name ||
-               customer.companyName ||
-               customer.fullName ||
-               '—');
+                ? (customer.companyName ||
+                    customer.company_name ||
+                    customer.businessName ||
+                    customer.business_name ||
+                    orderData.supplierInfo?.companyName ||
+                    orderData.supplierInfo?.businessName ||
+                    orderData.supplierInfo?.business_name ||
+                    customer.name ||
+                    customer.displayName ||
+                    customer.fullName ||
+                    '—')
+                : (customer.name ||
+                    customer.displayName ||
+                    customer.businessName ||
+                    customer.business_name ||
+                    customer.companyName ||
+                    customer.fullName ||
+                    '—');
         const businessName =
             customer.businessName ||
             customer.companyName ||
@@ -200,7 +215,7 @@ const PrintDocument = ({
                 orderData.shippingAddress ||
                 orderData.billingAddress ||
                 '';
-            
+
             // Format address: object, array (suppliers store addresses array in address column), or string
             if (Array.isArray(addr) && addr.length > 0) {
                 const a = addr.find(x => x.isDefault) || addr.find(x => x.type === 'billing' || x.type === 'both') || addr[0];
@@ -341,7 +356,7 @@ const PrintDocument = ({
     ].filter(Boolean);
 
     const invoiceDetailLines = [
-        showPrintInvoiceNumber ? { label: 'P/I No.:', value: formatText(documentNumber) } : null,
+        showPrintInvoiceNumber ? { label: 'Invoice #:', value: formatText(documentNumber) } : null,
         (showPrintInvoiceDate && showDate) ? { label: 'Date:', value: formatDate(invoiceDate) } : null,
         showPrintInvoiceStatus ? { label: 'Status:', value: formatText(documentStatus) } : null,
         showPrintInvoiceType ? { label: 'Type:', value: formatText(documentType) } : null
@@ -355,10 +370,25 @@ const PrintDocument = ({
 
     const hasCameraTime = orderData?.billStartTime || orderData?.billEndTime;
 
-    // Received amount: from API or fallback when paid (so we don't show 0.0 on paid invoices)
-    const rawReceived = toNumber(orderData?.payment?.amountPaid ?? orderData?.amount_paid, 0);
-    const isPaid = orderData?.payment_status === 'paid' || orderData?.payment?.status === 'paid';
-    const receivedAmount = rawReceived > 0 ? rawReceived : (isPaid ? toNumber(totalValue, 0) : 0);
+    // Received amount: trust explicit amount_paid / payment.amountPaid when present (including 0).
+    // Do NOT substitute net total when received is 0 but status says "paid" (API can be inconsistent).
+    // Only if both fields are missing, fall back to full net for legacy rows that are paid but have no amount stored.
+    const explicitFromPayment = orderData?.payment?.amountPaid;
+    const explicitFromRoot = orderData?.amount_paid;
+    const hasExplicitPaymentAmount =
+        (explicitFromPayment !== undefined && explicitFromPayment !== null) ||
+        (explicitFromRoot !== undefined && explicitFromRoot !== null);
+    const rawReceived = toNumber(
+        hasExplicitPaymentAmount ? (explicitFromPayment ?? explicitFromRoot) : 0,
+        0
+    );
+    const normalizedPaymentStatus = String(
+        orderData?.payment_status ?? orderData?.payment?.status ?? ''
+    ).toLowerCase();
+    const isPaidStatus = normalizedPaymentStatus === 'paid';
+    const receivedAmount = hasExplicitPaymentAmount
+        ? rawReceived
+        : (isPaidStatus ? toNumber(totalValue, 0) : 0);
     const invoiceBalance = toNumber(totalValue, 0) - toNumber(receivedAmount, 0);
     const previousBalance = ledgerBalance - invoiceBalance;
 
@@ -379,7 +409,7 @@ const PrintDocument = ({
                     {/* Company Header */}
                     <div className="receipt-voucher__header text-center mb-6">
                         {showLogo && safeCompanySettings.logo && (
-                            <OptimizedImage src={safeCompanySettings.logo} alt="Logo" className="receipt-voucher__logo max-h-16 mx-auto mb-2" />
+                            <img src={safeCompanySettings.logo} alt="Logo" className="receipt-voucher__logo max-h-16 mx-auto mb-2" />
                         )}
                         <h1 className="receipt-voucher__company-name font-bold text-xl">{resolvedCompanyName}</h1>
                         {resolvedCompanyAddress && <p className="receipt-voucher__company-address text-sm text-gray-600">{resolvedCompanyAddress}</p>}
@@ -410,10 +440,10 @@ const PrintDocument = ({
                             <div className="receipt-voucher__value flex-1 p-2 border-l border-black font-bold text-lg">{formatCurrency(amount)}</div>
                         </div>
                         {ledgerBalanceProp != null && (
-                        <div className="receipt-voucher__row flex border-b border-black">
-                            <div className="receipt-voucher__label w-1/3 font-semibold p-2">Ledger Balance</div>
-                            <div className="receipt-voucher__value flex-1 p-2 border-l border-black">{formatCurrency(Number(ledgerBalanceProp))}</div>
-                        </div>
+                            <div className="receipt-voucher__row flex border-b border-black">
+                                <div className="receipt-voucher__label w-1/3 font-semibold p-2">Ledger Balance</div>
+                                <div className="receipt-voucher__value flex-1 p-2 border-l border-black">{formatCurrency(Number(ledgerBalanceProp))}</div>
+                            </div>
                         )}
                         <div className="receipt-voucher__row flex border-b border-black">
                             <div className="receipt-voucher__label w-1/3 font-semibold p-2">Particular</div>
@@ -450,7 +480,7 @@ const PrintDocument = ({
                     <div className="grid grid-cols-12 gap-4 items-center mb-2">
                         <div className="col-span-2">
                             {showLogo && safeCompanySettings.logo && (
-                                <OptimizedImage
+                                <img
                                     src={safeCompanySettings.logo}
                                     alt="Logo"
                                     className="max-h-20 w-auto object-contain"
@@ -485,7 +515,7 @@ const PrintDocument = ({
                         Address: {partyInfo.address}
                     </div>
                     <div className="col-span-4 p-2 border-r border-b border-black font-medium text-right italic">
-                        P/I No.: {documentNumber}
+                        Invoice No: {documentNumber}
                     </div>
                 </div>
 
@@ -509,19 +539,27 @@ const PrintDocument = ({
                             );
                             const lineTotal = toNumber(item.total ?? item.lineTotal ?? item.totalPrice ?? item.totalCost, qty * price);
                             const qtyDisplay = formatQuantityDisplay(qty, item.product ?? item.productData, null, { boxes: item.boxes, pieces: item.pieces });
+                            const barcodeLine = getLineBarcodeDisplay(item);
                             return (
                                 <tr key={index}>
                                     <td className="border border-black p-1 text-center">{index + 1}</td>
                                     <td className="border border-black p-1 uppercase">
-                                        <div className="flex items-center gap-2">
-                                            {(printSettings?.showProductImages !== false && (item.product?.imageUrl || item.imageUrl || item.product?.image || item.image)) && (
-                                                <OptimizedImage 
-                                                    src={item.product?.imageUrl || item.imageUrl || item.product?.image || item.image} 
-                                                    alt="" 
-                                                    className="w-8 h-8 object-cover rounded border border-gray-200" 
-                                                />
+                                        <div className="flex flex-col gap-0.5">
+                                            <div className="flex items-center gap-2">
+                                                {(printSettings?.showProductImages !== false && (item.product?.imageUrl || item.imageUrl || item.product?.image || item.image)) && (
+                                                    <img
+                                                        src={item.product?.imageUrl || item.imageUrl || item.product?.image || item.image}
+                                                        alt=""
+                                                        className="w-8 h-8 object-cover rounded border border-gray-200"
+                                                    />
+                                                )}
+                                                <span>{item.product?.name || item.name || `Item ${index + 1}`}</span>
+                                            </div>
+                                            {barcodeLine && (
+                                                <div className="text-[10px] text-gray-700 normal-case font-mono pl-0">
+                                                    {barcodeLine.label}: {barcodeLine.value}
+                                                </div>
                                             )}
-                                            <span>{item.product?.name || item.name || `Item ${index + 1}`}</span>
                                         </div>
                                     </td>
                                     <td className="border border-black p-1 text-center">{qtyDisplay}</td>
@@ -602,7 +640,7 @@ const PrintDocument = ({
                 {showLogo && (
                     <div className="print-document__logo-wrap">
                         {safeCompanySettings.logo ? (
-                            <OptimizedImage
+                            <img
                                 src={safeCompanySettings.logo}
                                 alt="Company Logo"
                                 className="print-document__logo-img"
@@ -729,18 +767,26 @@ const PrintDocument = ({
                         );
                         const lineTotal = toNumber(item.total ?? item.lineTotal ?? item.totalPrice ?? item.totalCost, qty * price);
                         const qtyDisplay = formatQuantityDisplay(qty, item.product ?? item.productData, null, { boxes: item.boxes, pieces: item.pieces });
+                        const barcodeLine = getLineBarcodeDisplay(item);
                         return (
                             <tr key={index}>
                                 <td>
-                                    <div className="flex items-center gap-2">
-                                        {(printSettings?.showProductImages !== false && (item.product?.imageUrl || item.imageUrl || item.product?.image || item.image)) && (
-                                            <OptimizedImage 
-                                                src={item.product?.imageUrl || item.imageUrl || item.product?.image || item.image} 
-                                                alt="" 
-                                                className="w-8 h-8 object-cover rounded border border-gray-200" 
-                                            />
+                                    <div className="flex flex-col gap-0.5">
+                                        <div className="flex items-center gap-2">
+                                            {(printSettings?.showProductImages !== false && (item.product?.imageUrl || item.imageUrl || item.product?.image || item.image)) && (
+                                                <img
+                                                    src={item.product?.imageUrl || item.imageUrl || item.product?.image || item.image}
+                                                    alt=""
+                                                    className="w-8 h-8 object-cover rounded border border-gray-200"
+                                                />
+                                            )}
+                                            <span>{item.product?.name || item.name || `Item ${index + 1}`}</span>
+                                        </div>
+                                        {barcodeLine && (
+                                            <div className="text-[11px] text-gray-600 font-mono">
+                                                {barcodeLine.label}: {barcodeLine.value}
+                                            </div>
                                         )}
-                                        <span>{item.product?.name || item.name || `Item ${index + 1}`}</span>
                                     </div>
                                 </td>
                                 {showDescription && (

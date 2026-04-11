@@ -6,7 +6,6 @@ import {
   Edit,
   Trash2,
   Eye,
-  Download,
   RefreshCw,
   ArrowUpDown,
   Calendar,
@@ -30,11 +29,7 @@ import {
   useCreateCashPaymentMutation,
   useUpdateCashPaymentMutation,
   useDeleteCashPaymentMutation,
-  useExportExcelMutation,
-  useExportCSVMutation,
-  useExportPDFMutation,
-  useExportJSONMutation,
-  useDownloadFileMutation,
+
 } from '../store/services/cashPaymentsApi';
 import { useGetSuppliersQuery } from '../store/services/suppliersApi';
 import { useGetCustomersQuery } from '../store/services/customersApi';
@@ -45,6 +40,7 @@ import DateFilter from '../components/DateFilter';
 import BaseModal from '../components/BaseModal';
 import FormField from '../components/FormField';
 import { getCurrentDatePakistan, formatDateForInput } from '../utils/dateUtils';
+
 
 const CashPayments = () => {
   const today = getCurrentDatePakistan();
@@ -71,6 +67,7 @@ const CashPayments = () => {
   const [showEditModal, setShowEditModal] = useState(false);
   const [showViewModal, setShowViewModal] = useState(false);
   const [showPrintModal, setShowPrintModal] = useState(false);
+
   const [selectedPayment, setSelectedPayment] = useState(null);
   const [printData, setPrintData] = useState(null);
 
@@ -168,11 +165,7 @@ const CashPayments = () => {
   const [createCashPayment, { isLoading: creating }] = useCreateCashPaymentMutation();
   const [updateCashPayment, { isLoading: updating }] = useUpdateCashPaymentMutation();
   const [deleteCashPayment, { isLoading: deleting }] = useDeleteCashPaymentMutation();
-  const [exportExcelMutation] = useExportExcelMutation();
-  const [exportCSVMutation] = useExportCSVMutation();
-  const [exportPDFMutation] = useExportPDFMutation();
-  const [exportJSONMutation] = useExportJSONMutation();
-  const [downloadFileMutation] = useDownloadFileMutation();
+
 
   const dispatch = useAppDispatch();
 
@@ -540,58 +533,7 @@ const CashPayments = () => {
     setShowViewModal(true);
   };
 
-  const handleExport = async (format = 'csv') => {
-    try {
-      const payload = { ...filters, ...pagination, sortConfig };
-      let response;
-      if (format === 'excel') {
-        response = await exportExcelMutation(payload).unwrap();
-      } else if (format === 'pdf') {
-        response = await exportPDFMutation(payload).unwrap();
-      } else if (format === 'json') {
-        response = await exportJSONMutation(payload).unwrap();
-      } else {
-        response = await exportCSVMutation(payload).unwrap();
-      }
 
-      const filename =
-        response?.filename ||
-        (format === 'excel'
-          ? 'cash_payments.xlsx'
-          : format === 'pdf'
-            ? 'cash_payments.pdf'
-            : format === 'json'
-              ? 'cash_payments.json'
-              : 'cash_payments.csv');
-
-      const downloadResponse = await downloadFileMutation(filename).unwrap();
-      const blob =
-        downloadResponse instanceof Blob
-          ? downloadResponse
-          : new Blob([downloadResponse], {
-            type:
-              format === 'excel'
-                ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-                : format === 'pdf'
-                  ? 'application/pdf'
-                  : format === 'json'
-                    ? 'application/json'
-                    : 'text/csv',
-          });
-
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      showSuccessToast(`Exported cash payments as ${format.toUpperCase()}`);
-    } catch (error) {
-      showErrorToast(handleApiError(error, 'Cash Payments Export'));
-    }
-  };
 
   const handlePrint = (payment) => {
     setPrintData(payment);
@@ -618,15 +560,7 @@ const CashPayments = () => {
           <p className="text-sm sm:text-base text-gray-600 mt-1">Manage and view all cash payment transactions</p>
         </div>
         <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 w-full sm:w-auto">
-          <Button
-            onClick={handleExport}
-            variant="outline"
-            size="default"
-            className="flex items-center justify-center gap-2 w-full sm:w-auto"
-          >
-            <Download className="h-4 w-4" />
-            <span>Export</span>
-          </Button>
+
           <Button
             onClick={resetForm}
             variant="default"
@@ -1391,6 +1325,8 @@ const CashPayments = () => {
           )}
         </div>
       </div>
+
+
 
       {/* Payment print modal – dedicated layout for payments only */}
       <ReceiptPaymentPrintModal
