@@ -915,13 +915,20 @@ export const Suppliers = () => {
   };
 
   const [bulkCreateSuppliers] = useBulkCreateSuppliersMutation();
+  const [autoCreateImportCities, setAutoCreateImportCities] = useState(true);
 
   const handleImportData = async (data) => {
-    if (!data || data.length === 0) return;
+    if (!data || data.length === 0) {
+      toast.error('No data rows found. Download Template, add at least one row with Company Name, and re-import.');
+      return;
+    }
 
     const toastId = toast.loading(`Saving ${data.length} suppliers to database...`);
     try {
-      const response = await bulkCreateSuppliers(data).unwrap();
+      const response = await bulkCreateSuppliers({
+        suppliers: data,
+        autoCreateCities: autoCreateImportCities
+      }).unwrap();
       if (response.created > 0) {
         toast.success(`Successfully imported ${response.created} suppliers!`, { id: toastId });
         if (response.failed > 0) {
@@ -929,7 +936,15 @@ export const Suppliers = () => {
           console.warn('Import failures:', response.errors);
         }
       } else {
-        toast.error('Failed to import suppliers. Check file format.', { id: toastId });
+        const errs = Array.isArray(response.errors) ? response.errors : [];
+        const detail = errs.length
+          ? errs.slice(0, 5).map((e) => e.error || e.message || String(e)).join(' · ')
+          : 'Each row needs a Company Name. Use the Template button for the correct columns.';
+        toast.error(
+          errs.length ? `Import failed: ${detail}` : 'Failed to import suppliers. Check file format.',
+          { id: toastId, duration: 8000 }
+        );
+        if (errs.length) console.warn('Supplier import errors:', response.errors);
       }
     } catch (error) {
       console.error('Bulk Import Error:', error);
@@ -958,6 +973,15 @@ export const Suppliers = () => {
           <ExcelExportButton getData={getExportData} label="Export" />
           <PdfExportButton getData={getExportData} label="PDF" />
           <ExcelImportButton onDataImported={handleImportData} label="Import" />
+          <label className="inline-flex items-center gap-2 text-xs text-gray-700 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5">
+            <input
+              type="checkbox"
+              checked={autoCreateImportCities}
+              onChange={(e) => setAutoCreateImportCities(e.target.checked)}
+              className="h-4 w-4"
+            />
+            Auto-create city
+          </label>
           <Button
             onClick={handleDownloadTemplate}
             variant="outline"

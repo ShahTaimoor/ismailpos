@@ -20,7 +20,7 @@ const TabBar = () => {
   }
 
   return (
-    <div className="bg-white border-b border-gray-200 shadow-sm overflow-x-hidden">
+    <div className="bg-white border-b border-gray-200 shadow-sm overflow-x-hidden print:hidden">
       <div className="flex flex-col">
         <div className="flex items-center justify-between px-2 sm:px-4 py-2 gap-2 min-w-0">
           {/* Tabs */}
@@ -79,17 +79,16 @@ const TabBar = () => {
               <button
                 onClick={toggleSplitView}
                 aria-label={isSplitView ? 'Disable split view' : 'Enable split view'}
-                className={`p-2 rounded-lg transition-colors ${
-                  isSplitView
+                className={`p-2 rounded-lg transition-colors ${isSplitView
                     ? 'bg-primary-100 text-primary-700 hover:bg-primary-200'
                     : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
-                }`}
+                  }`}
                 title={isSplitView ? "Disable split view" : "Enable split view (side-by-side)"}
               >
                 {isSplitView ? <Columns className="h-4 w-4" /> : <Split className="h-4 w-4" />}
               </button>
             )}
-            
+
             {tabs.length > 1 && (
               <button
                 onClick={closeAllTabs}

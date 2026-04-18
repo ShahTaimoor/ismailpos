@@ -19,7 +19,8 @@ import {
   useLinkInvestorsMutation,
   useBulkCreateProductsMutation,
 } from '../store/services/productsApi';
-import { useGetCategoriesQuery } from '../store/services/categoriesApi';
+import { useGetCategoryTreeQuery } from '../store/services/categoriesApi';
+import { flattenCategoryApiTree } from '../utils/categoryTree';
 import { handleApiError, showSuccessToast, showErrorToast } from '../utils/errorHandler';
 import { toast } from 'sonner';
 import { LoadingPage } from '../components/LoadingSpinner';
@@ -47,6 +48,7 @@ import { ProductList } from '../components/ProductList';
 import { useAppDispatch } from '../store/hooks';
 import { api } from '../store/api';
 import { useProductOperations } from '../hooks/useProductOperations';
+import { useCompanyInfo } from '../hooks/useCompanyInfo';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import ExcelExportButton from '../components/ExcelExportButton';
@@ -82,18 +84,14 @@ export const Products = () => {
     refetchOnMountOrArgChange: true,
   });
 
-  const { data: categoriesDataRaw } = useGetCategoriesQuery({ limit: 999999 }, {
+  const { data: categoryTreeRaw } = useGetCategoryTreeQuery(undefined, {
     refetchOnMountOrArgChange: true,
   });
 
   const categoriesData = useMemo(() => {
-    if (!categoriesDataRaw) return [];
-    if (Array.isArray(categoriesDataRaw)) return categoriesDataRaw;
-    if (categoriesDataRaw?.data?.categories) return categoriesDataRaw.data.categories;
-    if (categoriesDataRaw?.categories) return categoriesDataRaw.categories;
-    if (categoriesDataRaw?.data?.data?.categories) return categoriesDataRaw.data.data.categories;
-    return [];
-  }, [categoriesDataRaw]);
+    const roots = Array.isArray(categoryTreeRaw) ? categoryTreeRaw : [];
+    return flattenCategoryApiTree(roots);
+  }, [categoryTreeRaw]);
 
   const allProducts = useMemo(() => {
     if (!data) return [];
@@ -162,6 +160,7 @@ export const Products = () => {
   };
 
   const [bulkCreateProducts] = useBulkCreateProductsMutation();
+  const [autoCreateImportCategories, setAutoCreateImportCategories] = useState(true);
 
   const { companyInfo: companySettings } = useCompanyInfo();
   const showCostPrice = companySettings.orderSettings?.showCostPrice !== false;
@@ -219,7 +218,10 @@ export const Products = () => {
 
     const toastId = toast.loading(`Saving ${data.length} products to database...`);
     try {
-      const response = await bulkCreateProducts(data).unwrap();
+      const response = await bulkCreateProducts({
+        products: data,
+        autoCreateCategories: autoCreateImportCategories
+      }).unwrap();
       if (response.created > 0) {
         toast.success(`Successfully imported ${response.created} products!`, { id: toastId });
         if (response.failed > 0) {
@@ -367,6 +369,15 @@ export const Products = () => {
             onDataImported={handleImportData}
             label="Import"
           />
+          <label className="inline-flex items-center gap-2 text-xs text-gray-700 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5">
+            <input
+              type="checkbox"
+              checked={autoCreateImportCategories}
+              onChange={(e) => setAutoCreateImportCategories(e.target.checked)}
+              className="h-4 w-4"
+            />
+            Auto-create category
+          </label>
           <Button
             onClick={handleDownloadTemplate}
             variant="outline"
@@ -445,7 +456,7 @@ export const Products = () => {
         }}
         onUndo={bulkOps.undoLastOperation}
         onClearSelection={bulkOps.deselectAll}
-        availableActions={['update', 'delete', 'status', 'category', 'price', 'stock']}
+        availableActions={['update', 'status', 'category', 'price', 'stock']}
       />
 
       <BulkUpdateModal
@@ -471,6 +482,7 @@ export const Products = () => {
         searchTerm={searchTerm}
         bulkOps={bulkOps}
         onEdit={productOps.handleEdit}
+        showDeleteButton={false}
         onDelete={(product) => productOps.handleDelete(product, confirmDelete)}
         onManageInvestors={(product) => {
           productOps.setSelectedProductForInvestors(product);

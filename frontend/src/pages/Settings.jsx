@@ -23,7 +23,9 @@ import {
   BarChart3,
   Clock,
   TrendingUp,
-  LayoutDashboard
+  LayoutDashboard,
+  AlertCircle,
+  UserPlus
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -51,6 +53,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
 
 export const Settings2 = () => {
   const { user } = useAuth();
@@ -83,6 +87,7 @@ export const Settings2 = () => {
   const [showNewUserPassword, setShowNewUserPassword] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showMyPasswordModal, setShowMyPasswordModal] = useState(false);
+  const [isSavingPrintSettings, setIsSavingPrintSettings] = useState(false);
   const [passwordResetUser, setPasswordResetUser] = useState(null);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -121,7 +126,8 @@ export const Settings2 = () => {
     mobilePrintPreview: false,
     headerText: '',
     footerText: '',
-    invoiceLayout: 'standard'
+    invoiceLayout: 'standard',
+    logoSize: 100
   });
 
   const sampleOrderData = useMemo(() => ({
@@ -793,7 +799,8 @@ export const Settings2 = () => {
           address: settings.data.data.address || '',
           contactNumber: settings.data.data.contactNumber || '',
           email: settings.data.data.email || '',
-          taxRegistrationNumber: settings.data.data.taxId || ''
+          taxRegistrationNumber: settings.data.data.taxId || '',
+          logo: settings.data.data.logo || ''
         };
 
         // Only update if data has changed
@@ -831,7 +838,8 @@ export const Settings2 = () => {
           mobilePrintPreview: ps.mobilePrintPreview ?? prev.mobilePrintPreview ?? false,
           headerText: ps.headerText || prev.headerText || '',
           footerText: ps.footerText || prev.footerText || '',
-          invoiceLayout: ps.invoiceLayout || prev.invoiceLayout || 'standard'
+          invoiceLayout: ps.invoiceLayout || prev.invoiceLayout || 'standard',
+          logoSize: ps.logoSize ?? prev.logoSize ?? 100
         };
 
         // Only update if changed prevents verify infinite loop
@@ -851,7 +859,8 @@ export const Settings2 = () => {
         address: settings.data.data.address || '',
         contactNumber: settings.data.data.contactNumber || '',
         email: settings.data.data.email || '',
-        taxRegistrationNumber: settings.data.data.taxId || ''
+        taxRegistrationNumber: settings.data.data.taxId || '',
+        logo: settings.data.data.logo || ''
       };
       setCompanyData(newData);
     }
@@ -871,7 +880,8 @@ export const Settings2 = () => {
           address: response.data.address || '',
           contactNumber: response.data.contactNumber || '',
           email: response.data.email || '',
-          taxRegistrationNumber: response.data.taxId || '' // Map taxId back to taxRegistrationNumber
+          taxRegistrationNumber: response.data.taxId || '', // Map taxId back to taxRegistrationNumber
+          logo: response.data.logo || ''
         };
         setCompanyData(updatedData);
       }
@@ -882,6 +892,30 @@ export const Settings2 = () => {
       handleApiError(error, 'Company Information Update');
     } finally {
       setSavingCompanySettings(false);
+    }
+  };
+
+  const handleSavePrintSettings = async () => {
+    setIsSavingPrintSettings(true);
+    try {
+      const dataToSend = {
+        companyName: companyData.companyName,
+        contactNumber: companyData.contactNumber,
+        address: companyData.address,
+        email: companyData.email,
+        taxId: companyData.taxRegistrationNumber,
+        printSettings: printSettings
+      };
+
+      await updateCompanySettings(dataToSend).unwrap();
+      toast.success('Print settings saved successfully!');
+
+      // Refetch to keep state in sync
+      refetchSettings();
+    } catch (error) {
+      handleApiError(error, 'Save Print Settings');
+    } finally {
+      setIsSavingPrintSettings(false);
     }
   };
 
@@ -1126,7 +1160,7 @@ export const Settings2 = () => {
     const { name, value, type, checked } = e.target;
     setPrintSettings(prev => ({
       ...prev,
-      [name]: type === 'checkbox' ? checked : value
+      [name]: type === 'checkbox' ? checked : (type === 'number' || type === 'range' ? Number(value) : value)
     }));
   };
 
@@ -1338,114 +1372,126 @@ export const Settings2 = () => {
 
         {/* Users Control Tab */}
         {activeTab === 'users' && (
-          <div className="space-y-6">
-            {/* Users List */}
-            <div className="card">
-              <div className="card-header">
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                  <div className="flex items-center space-x-2">
-                    <UserCheck className="h-5 w-5 text-gray-600" />
-                    <h2 className="text-lg font-semibold">System Users ({users.length})</h2>
+          <div className="space-y-8 max-w-full mx-auto">
+            {/* Users List Card */}
+            <div className="bg-white border text-gray-900 shadow-sm border-gray-200 rounded-2xl overflow-hidden relative">
+              
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between p-6 border-b border-gray-100 bg-gray-50/50">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2.5 bg-gray-900 text-white rounded-xl shadow-sm">
+                    <Users className="h-5 w-5" />
                   </div>
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:space-x-2">
-                    <Button
-                      onClick={() => {
-                        resetNewUserForm();
-                        const form = document.getElementById('add-edit-user-form');
-                        if (form) {
-                          form.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                          setTimeout(() => {
-                            const firstInput = form.querySelector('input[type="text"]');
-                            if (firstInput) {
-                              firstInput.focus();
-                            }
-                          }, 300);
-                        }
-                      }}
-                      variant="default"
-                      size="sm"
-                      title="Add New User"
-                    >
-                      <Plus className="h-4 w-4 mr-2" />
-                      Add New User
-                    </Button>
+                  <div>
+                    <h2 className="text-xl font-bold text-gray-900 tracking-tight">System Users ({users.length})</h2>
+                    <p className="text-sm text-gray-500 mt-1">
+                      Manage existing team members, system access, and individual permissions.
+                    </p>
                   </div>
                 </div>
-                <p className="text-sm text-gray-600 mt-1">
-                  Manage existing users and their permissions. Admin users have full system access.
-                </p>
-
+                <div className="mt-4 sm:mt-0 flex gap-2">
+                  <Button
+                    onClick={() => {
+                      resetNewUserForm();
+                      const form = document.getElementById('add-edit-user-form');
+                      if (form) {
+                        form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        setTimeout(() => {
+                          const firstInput = form.querySelector('input[type="text"]');
+                          if (firstInput) {
+                            firstInput.focus();
+                          }
+                        }, 300);
+                      }
+                    }}
+                    className="bg-gray-900 text-white hover:bg-gray-800 shadow-md transition-all rounded-lg px-5 py-2.5 h-auto text-sm font-medium"
+                  >
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add New User
+                  </Button>
+                </div>
               </div>
 
-              <div className="card-content">
+              <div className="p-0">
                 {usersLoading ? (
-                  <div className="flex justify-center py-8">
+                  <div className="flex justify-center py-12">
                     <LoadingSpinner />
                   </div>
                 ) : usersError ? (
-                  <div className="text-center py-8">
-                    <div className="bg-red-50 border border-red-200 rounded-lg p-6 max-w-md mx-auto">
+                  <div className="text-center py-12">
+                    <div className="bg-red-50 border border-red-100 rounded-xl p-6 max-w-md mx-auto shadow-sm">
                       <div className="flex items-center justify-center mb-4">
-                        <X className="h-12 w-12 text-red-500" />
+                        <div className="p-3 bg-red-100 text-red-600 rounded-full">
+                          <X className="h-8 w-8" />
+                        </div>
                       </div>
-                      <h3 className="text-lg font-semibold text-red-800 mb-2">Failed to Load Users</h3>
-                      <p className="text-sm text-red-600 mb-4">
+                      <h3 className="text-lg font-bold text-red-900 mb-2">Failed to Load Users</h3>
+                      <p className="text-sm text-red-700 mb-6 font-medium">
                         {usersError.response?.status === 403
                           ? 'You need "manage_users" permission to view users. Please contact an administrator.'
                           : usersError.response?.status === 401
                             ? 'Authentication required. Please refresh the page and log in again.'
                             : usersError.message || 'An error occurred while loading users.'}
                       </p>
-                      <Button
-                        onClick={() => refetchUsers()}
-                        variant="default"
-                        size="sm"
-                      >
+                      <Button onClick={() => refetchUsers()} variant="outline" className="bg-white hover:bg-red-50 border-red-200 text-red-700 font-semibold px-6 py-2 rounded-lg transition-colors">
                         <RefreshCw className="h-4 w-4 mr-2" />
                         Try Again
                       </Button>
                     </div>
                   </div>
                 ) : users.length > 0 ? (
-                  <div className="space-y-3">
+                  <ul className="divide-y divide-gray-100">
                     {users.map((systemUser) => (
-                      <div
+                      <li
                         key={systemUser._id}
-                        className="flex flex-col sm:flex-row sm:items-center sm:justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50 gap-4 w-full overflow-hidden"
+                        className="group flex flex-col sm:flex-row sm:items-center sm:justify-between p-5 hover:bg-gray-50/80 transition-all duration-200"
                       >
-                        <div className="flex items-center space-x-4 flex-1 min-w-0">
-                          <div className="h-10 w-10 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
-                            <User className="h-5 w-5 text-blue-600" />
+                        <div className="flex items-center space-x-5 flex-1 min-w-0">
+                          {/* Avatar */}
+                          <div className={`h-14 w-14 rounded-2xl flex items-center justify-center flex-shrink-0 text-white font-bold text-xl shadow-sm ${
+                            systemUser.role === 'admin' ? 'bg-gradient-to-br from-gray-700 to-gray-900' :
+                            systemUser.role === 'manager' ? 'bg-gradient-to-br from-blue-500 to-blue-700' :
+                            'bg-gradient-to-br from-emerald-400 to-emerald-600'
+                          }`}>
+                            {systemUser.firstName?.charAt(0) || ''}{systemUser.lastName?.charAt(0) || ''}
                           </div>
+
                           <div className="min-w-0 flex-1">
-                            <p className="text-sm font-medium text-gray-900 truncate">
-                              {systemUser.firstName} {systemUser.lastName}
-                            </p>
-                            <p className="text-xs text-gray-500 truncate">
+                            <div className="flex items-center gap-2 md:gap-3 flex-wrap">
+                              <p className="text-base font-bold text-gray-900 truncate tracking-tight">
+                                {systemUser.firstName} {systemUser.lastName}
+                              </p>
+                              {systemUser._id === user?._id && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 tracking-wider uppercase border border-indigo-100 shadow-sm">
+                                  You
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-sm text-gray-500 mt-0.5 truncate font-medium flex items-center gap-1.5">
                               {systemUser.email}
                             </p>
-                            <div className="flex flex-wrap items-center gap-2 mt-1">
-                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${systemUser.role === 'admin' ? 'bg-red-100 text-red-800' :
-                                systemUser.role === 'manager' ? 'bg-blue-100 text-blue-800' :
-                                  systemUser.role === 'cashier' ? 'bg-green-100 text-green-800' :
-                                    systemUser.role === 'inventory' ? 'bg-purple-100 text-purple-800' :
-                                      'bg-gray-100 text-gray-800'
-                                }`}>
+                            
+                            <div className="flex flex-wrap items-center gap-2 mt-2.5">
+                              {/* Role Badge */}
+                              <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm border ${
+                                systemUser.role === 'admin' ? 'bg-gray-900 text-white border-gray-900' :
+                                systemUser.role === 'manager' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                                systemUser.role === 'cashier' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                                'bg-gray-50 text-gray-700 border-gray-200'
+                              }`}>
+                                <Shield className="w-3.5 h-3.5 mr-1.5 opacity-70" />
                                 {systemUser.role.charAt(0).toUpperCase() + systemUser.role.slice(1)}
                               </span>
 
-                              {/* Activity Status */}
-                              {systemUser.lastLogin && (
-                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${systemUser.isActive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                                  }`}>
-                                  <div className={`w-2 h-2 rounded-full mr-1 ${systemUser.isActive ? 'bg-green-400' : 'bg-red-400'}`}></div>
-                                  {systemUser.isActive ? 'Active' : 'Inactive'}
-                                </span>
-                              )}
-
-                              {/* Login Count */}
+                              {/* Status Badge */}
+                              <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm border ${
+                                systemUser.status === 'active' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'
+                              }`}>
+                                <div className={`w-1.5 h-1.5 rounded-full mr-1.5 ${systemUser.status === 'active' ? 'bg-green-500' : 'bg-red-500 animate-pulse'}`}></div>
+                                {systemUser.status === 'active' ? 'Active' : 'Inactive'}
+                              </span>
+                              
                               {systemUser.loginCount > 0 && (
-                                <span className="text-xs text-gray-500">
+                                <span className="text-xs text-gray-400 font-medium ml-2 px-2 border-l border-gray-200">
                                   {systemUser.loginCount} logins
                                 </span>
                               )}
@@ -1453,79 +1499,43 @@ export const Settings2 = () => {
                           </div>
                         </div>
 
-                        <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:space-x-3 flex-shrink-0">
-                          <div className="flex items-center space-x-2 sm:space-x-3">
-                            <div className={`h-2 w-2 rounded-full ${systemUser.status === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                            <span className="text-xs text-gray-500">
-                              {systemUser.status === 'active' ? 'Active' : 'Inactive'}
-                            </span>
-                            {systemUser._id === user?._id && (
-                              <span className="text-xs text-blue-600 font-medium">(You)</span>
-                            )}
-                          </div>
-                          <div className="flex flex-wrap sm:flex-nowrap gap-2">
-                            <Button
-                              onClick={() => openActivityModal(systemUser)}
-                              variant="default"
-                              size="sm"
-                              title="View Activity"
-                            >
-                              <BarChart3 className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              onClick={() => openPasswordModal(systemUser)}
-                              variant="secondary"
-                              size="sm"
-                              title="Change Password"
-                            >
-                              <Lock className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              onClick={() => handleEditUser(systemUser)}
-                              variant="secondary"
-                              size="sm"
-                              title="Edit User"
-                            >
-                              <Edit className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              onClick={() => handleDeleteUserClick(systemUser._id)}
-                              variant="destructive"
-                              size="sm"
-                              disabled={systemUser._id === user?._id}
-                              title="Delete User"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
+                        <div className="mt-5 sm:mt-0 flex flex-nowrap items-center gap-2.5 flex-shrink-0 opacity-100 lg:opacity-60 group-hover:opacity-100 transition-opacity">
+                          <Button variant="outline" size="sm" onClick={() => openActivityModal(systemUser)} title="Activity Logs" className="h-10 w-10 p-0 rounded-xl hover:bg-gray-900 hover:text-white hover:border-gray-900 shadow-sm">
+                            <BarChart3 className="h-4 w-4" />
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => openPasswordModal(systemUser)} title="Reset Password" className="h-10 w-10 p-0 rounded-xl hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-200 shadow-sm border-gray-200">
+                            <Lock className="h-4 w-4" />
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => handleEditUser(systemUser)} title="Edit Configuration" className="h-10 w-10 p-0 rounded-xl hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 shadow-sm border-gray-200">
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => handleDeleteUserClick(systemUser._id)} disabled={systemUser._id === user?._id} title="Delete User" className="h-10 w-10 p-0 rounded-xl hover:bg-red-50 hover:text-red-700 hover:border-red-200 disabled:opacity-40 shadow-sm border-gray-200">
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         </div>
-                      </div>
+                      </li>
                     ))}
-                  </div>
+                  </ul>
                 ) : (
-                  <div className="text-center py-8">
-                    <Users className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                    <p className="text-gray-700 font-medium mb-2">No users found</p>
-                    <p className="text-sm text-gray-500 mb-4">
-                      The system has no users registered yet. Use the form below to create your first user.
+                  <div className="text-center py-16 px-4">
+                    <div className="bg-gray-50 h-20 w-20 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner ring-1 ring-gray-200">
+                      <Users className="h-10 w-10 text-gray-400" />
+                    </div>
+                    <h3 className="text-xl font-bold text-gray-900 mb-2 tracking-tight">No Users Found</h3>
+                    <p className="text-gray-500 mb-8 max-w-sm mx-auto font-medium">
+                      The system doesn't have any users assigned yet. Start by inviting a new team member below.
                     </p>
                     <Button
                       onClick={() => {
                         const form = document.getElementById('add-edit-user-form');
                         if (form) {
                           form.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                          setTimeout(() => {
-                            const firstInput = form.querySelector('input[type="text"]');
-                            if (firstInput) {
-                              firstInput.focus();
-                            }
-                          }, 300);
+                          setTimeout(() => form.querySelector('input[type="text"]')?.focus(), 300);
                         }
                       }}
-                      variant="default"
-                      size="sm"
+                      className="bg-gray-900 text-white hover:bg-gray-800 rounded-xl px-6 py-2.5 h-auto font-semibold shadow-md"
                     >
-                      <Plus className="h-4 w-4 mr-2" />
+                      <Plus className="h-5 w-5 mr-2" />
                       Create First User
                     </Button>
                   </div>
@@ -1534,324 +1544,391 @@ export const Settings2 = () => {
             </div>
 
             {/* Add/Edit User Form */}
-            <div className="card">
-              <div className="card-header">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <Users className="h-5 w-5 text-gray-600" />
-                    <h2 className="text-lg font-semibold">
-                      {editingUser ? 'Edit User' : 'Add New User'}
-                    </h2>
+            <div id="add-edit-user-form" className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden relative mt-8">
+              <div className="absolute top-0 left-0 w-full h-1.5 bg-gray-900"></div>
+              
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between p-6 md:p-8 border-b border-gray-100 bg-white">
+                <div className="flex items-center space-x-4">
+                  <div className="p-3 bg-gray-100 text-gray-900 rounded-xl shadow-sm">
+                    {editingUser ? <UserCheck className="h-6 w-6" /> : <Plus className="h-6 w-6" />}
                   </div>
-                  {editingUser && (
-                    <Button
-                      onClick={resetNewUserForm}
-                      variant="secondary"
-                      size="sm"
-                    >
-                      <X className="h-4 w-4 mr-2" />
-                      Cancel Edit
-                    </Button>
-                  )}
+                  <div>
+                    <h2 className="text-2xl font-black text-gray-900 tracking-tight">
+                      {editingUser ? 'Edit Member Profile' : 'Add New Member'}
+                    </h2>
+                    <p className="text-sm font-medium text-gray-500 mt-1">
+                      {editingUser ? 'Modify credentials, roles, and fine-grained permissions.' : 'Create a new user access profile and designate system permissions.'}
+                    </p>
+                  </div>
                 </div>
-                <p className="text-sm text-gray-600 mt-1">
-                  {editingUser ? 'Update user information and permissions' : 'Create a new system user with specific roles and permissions'}
-                </p>
+                {editingUser && (
+                  <Button
+                    onClick={resetNewUserForm}
+                    variant="outline"
+                    className="mt-4 sm:mt-0 font-semibold px-4 shadow-sm rounded-lg hover:border-gray-900"
+                  >
+                    <X className="h-4 w-4 mr-2" />
+                    Cancel Edit
+                  </Button>
+                )}
               </div>
 
-              <div className="card-content">
-                <form id="add-edit-user-form" key={editingUser?._id || 'new-user'} onSubmit={editingUser ? handleUpdateUserSubmit : handleCreateUser} className="space-y-6">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {/* First Name */}
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        First Name *
-                      </label>
-                      <Input
-                        type="text"
-                        name="firstName"
-                        value={newUserData.firstName}
-                        onChange={handleNewUserChange}
-                        placeholder="Enter first name"
-                        autoComplete="off"
-                        required
-                      />
-                    </div>
+              <div className="p-6 md:p-8 bg-gray-50/30">
+                <form key={editingUser?._id || 'new-user'} onSubmit={editingUser ? handleUpdateUserSubmit : handleCreateUser} className="space-y-8">
+                  
+                  {/* Row 1: Profile Information container */}
+                  <div className="bg-white p-6 md:p-8 rounded-2xl shadow-sm border border-gray-100">
+                    <h3 className="text-md font-bold text-gray-900 border-b border-gray-100 pb-4 mb-6 flex items-center">
+                      <User className="h-5 w-5 mr-2 text-gray-500" />
+                      Profile Details
+                    </h3>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
+                      {/* First Name */}
+                      <div className="group">
+                        <label className="block text-sm font-semibold text-gray-900 mb-2 group-focus-within:text-blue-600 transition-colors">
+                          First Name <span className="text-red-500">*</span>
+                        </label>
+                        <Input
+                          type="text"
+                          name="firstName"
+                          value={newUserData.firstName}
+                          onChange={handleNewUserChange}
+                          placeholder="e.g. John"
+                          autoComplete="off"
+                          required
+                          className="h-11 rounded-xl bg-gray-50/50 border-gray-200 focus:bg-white transition-all shadow-sm"
+                        />
+                      </div>
 
-                    {/* Last Name */}
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Last Name *
-                      </label>
-                      <Input
-                        type="text"
-                        name="lastName"
-                        value={newUserData.lastName}
-                        onChange={handleNewUserChange}
-                        placeholder="Enter last name"
-                        autoComplete="off"
-                        required
-                      />
-                    </div>
+                      {/* Last Name */}
+                      <div className="group">
+                        <label className="block text-sm font-semibold text-gray-900 mb-2 group-focus-within:text-blue-600 transition-colors">
+                          Last Name <span className="text-red-500">*</span>
+                        </label>
+                        <Input
+                          type="text"
+                          name="lastName"
+                          value={newUserData.lastName}
+                          onChange={handleNewUserChange}
+                          placeholder="e.g. Doe"
+                          autoComplete="off"
+                          required
+                          className="h-11 rounded-xl bg-gray-50/50 border-gray-200 focus:bg-white transition-all shadow-sm"
+                        />
+                      </div>
 
-                    {/* Email */}
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Email Address *
-                      </label>
-                      <Input
-                        type="email"
-                        name="email"
-                        value={newUserData.email}
-                        onChange={handleNewUserChange}
-                        placeholder="Enter email address"
-                        autoComplete="off"
-                        required
-                      />
-                    </div>
-
-                    {/* Password (only for new users) */}
-                    {!editingUser && (
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Password *
+                      {/* Email */}
+                      <div className="group">
+                        <label className="block text-sm font-semibold text-gray-900 mb-2 group-focus-within:text-blue-600 transition-colors">
+                          Email Address <span className="text-red-500">*</span>
                         </label>
                         <div className="relative">
+                          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                            <Mail className="h-4 w-4 text-gray-400" />
+                          </div>
                           <Input
-                            type={showNewUserPassword ? 'text' : 'password'}
-                            name="password"
-                            value={newUserData.password}
+                            type="email"
+                            name="email"
+                            value={newUserData.email}
                             onChange={handleNewUserChange}
-                            className="pr-10"
-                            placeholder="Enter password"
-                            autoComplete="new-password"
+                            placeholder="john.doe@company.com"
+                            autoComplete="off"
                             required
+                            className="h-11 pl-10 rounded-xl bg-gray-50/50 border-gray-200 focus:bg-white transition-all shadow-sm"
                           />
-                          <button
-                            type="button"
-                            onClick={() => setShowNewUserPassword(!showNewUserPassword)}
-                            className="absolute inset-y-0 right-0 pr-3 flex items-center"
-                          >
-                            {showNewUserPassword ? (
-                              <EyeOff className="h-4 w-4 text-gray-400" />
-                            ) : (
-                              <Eye className="h-4 w-4 text-gray-400" />
-                            )}
-                          </button>
                         </div>
                       </div>
-                    )}
 
-                    {/* Change Password button (only for editing users) */}
-                    {editingUser && (
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Password
-                        </label>
-                        <Button
-                          type="button"
-                          onClick={() => openPasswordModal()}
-                          variant="secondary"
-                          className="w-full"
-                        >
-                          <Lock className="h-4 w-4 mr-2" />
-                          Change Password
-                        </Button>
-                        <p className="text-xs text-gray-500 mt-1">
-                          Click to reset the user's password
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Role */}
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Role * {editingUser && editingUser._id === user?._id && <span className="text-xs text-gray-500">(Cannot change your own role)</span>}
-                      </label>
-                      <select
-                        name="role"
-                        value={newUserData.role}
-                        onChange={handleNewUserChange}
-                        className="input"
-                        required
-                        disabled={editingUser && editingUser._id === user?._id}
-                      >
-                        <option value="cashier">Cashier - Basic sales operations</option>
-                        <option value="manager">Manager - Full operational access</option>
-                        <option value="admin">Admin - Full system access including user management</option>
-                        <option value="viewer">Viewer - Read-only access</option>
-                      </select>
-                      <p className="text-xs text-gray-500 mt-1">
-                        {editingUser && editingUser._id === user?._id
-                          ? 'You cannot change your own role. Contact another administrator if needed.'
-                          : 'Admin users have full system access and can manage other users'}
-                      </p>
-
-                      {/* Update Role Permissions Button */}
-                      {rolePermissionsChanged[newUserData.role] && (
-                        <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-md">
-                          <div className="flex items-center justify-between">
-                            <div className="text-sm text-yellow-800">
-                              <strong>⚠️ Permission changes detected</strong>
-                              <p className="text-xs text-yellow-600 mt-1">
-                                You've modified permissions for the {newUserData.role} role
-                              </p>
+                      {/* Password / Change Auth */}
+                      {!editingUser ? (
+                        <div className="group">
+                          <label className="block text-sm font-semibold text-gray-900 mb-2 group-focus-within:text-blue-600 transition-colors">
+                            Initial Password <span className="text-red-500">*</span>
+                          </label>
+                          <div className="relative">
+                            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                              <Lock className="h-4 w-4 text-gray-400" />
                             </div>
+                            <Input
+                              type={showNewUserPassword ? 'text' : 'password'}
+                              name="password"
+                              value={newUserData.password}
+                              onChange={handleNewUserChange}
+                              className="h-11 pl-10 pr-10 rounded-xl bg-gray-50/50 border-gray-200 focus:bg-white transition-all shadow-sm"
+                              placeholder="Minimum 6 characters"
+                              autoComplete="new-password"
+                              required
+                            />
                             <button
                               type="button"
-                              onClick={() => handleUpdateRolePermissions(newUserData.role)}
-                              disabled={isUpdatingRolePermissions}
-                              variant="warning"
-                              size="sm"
+                              onClick={() => setShowNewUserPassword(!showNewUserPassword)}
+                              className="absolute inset-y-0 right-0 pr-3.5 flex items-center hover:text-blue-600 transition-colors"
                             >
-                              {isUpdatingRolePermissions ? (
-                                <>
-                                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                                  Updating...
-                                </>
+                              {showNewUserPassword ? (
+                                <EyeOff className="h-4 w-4 text-gray-500" />
                               ) : (
-                                <>
-                                  <Users className="h-4 w-4 mr-2" />
-                                  Update All {newUserData.role}s
-                                </>
+                                <Eye className="h-4 w-4 text-gray-500" />
                               )}
                             </button>
                           </div>
                         </div>
-                      )}
-                    </div>
-
-                    {/* Status */}
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Status {editingUser && editingUser._id === user?._id && <span className="text-xs text-gray-500">(Cannot change your own status)</span>}
-                      </label>
-                      <div className="flex space-x-4">
-                        <label className="flex items-center">
-                          <input
-                            type="radio"
-                            name="status"
-                            value="active"
-                            checked={newUserData.status === 'active'}
-                            onChange={handleNewUserChange}
-                            className="mr-2"
-                            disabled={editingUser && editingUser._id === user?._id}
-                          />
-                          <span className="text-sm text-gray-700">Active</span>
-                        </label>
-                        <label className="flex items-center">
-                          <input
-                            type="radio"
-                            name="status"
-                            value="inactive"
-                            checked={newUserData.status === 'inactive'}
-                            onChange={handleNewUserChange}
-                            className="mr-2"
-                            disabled={editingUser && editingUser._id === user?._id}
-                          />
-                          <span className="text-sm text-gray-700">Inactive</span>
-                        </label>
-                      </div>
-                      {editingUser && editingUser._id === user?._id && (
-                        <p className="text-xs text-gray-500 mt-1">
-                          You cannot change your own status. Contact another administrator if needed.
-                        </p>
-                      )}
-
-                      {/* Create User Button - Only shown when adding new user */}
-                      {!editingUser && (
-                        <div className="mt-6">
-                          <LoadingButton
-                            type="submit"
-                            isLoading={isCreatingUser}
-                            variant="default"
-                            className="w-full px-6 py-2.5"
+                      ) : (
+                        <div className="group">
+                          <label className="block text-sm font-semibold text-gray-900 mb-2">
+                            Security Credentials
+                          </label>
+                          <Button
+                            type="button"
+                            onClick={() => openPasswordModal()}
+                            variant="outline"
+                            className="w-full h-11 rounded-xl shadow-sm border-gray-200 font-semibold border hover:bg-indigo-50 hover:text-indigo-700 hover:border-indigo-300 transition-all justify-start"
                           >
-                            <Plus className="h-4 w-4 mr-2" />
-                            Create User
-                          </LoadingButton>
+                            <Lock className="h-4 w-4 mr-3 text-indigo-500" />
+                            Force Password Reset
+                          </Button>
+                          <p className="text-xs font-semibold text-gray-400 mt-2 ml-1">
+                            Sends an update overlay to change this user's password immediately.
+                          </p>
                         </div>
                       )}
                     </div>
                   </div>
 
-                  {/* Permissions */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-4">
-                      <div className="flex items-center space-x-2">
-                        <Shield className="h-4 w-4" />
-                        <span>Roles & Permissions</span>
-                        {editingUser && editingUser._id === user?._id && (
-                          <span className="text-xs text-gray-500">(Cannot modify your own permissions)</span>
+                  {/* Row 2: Access Configuration container */}
+                  <div className="bg-gradient-to-br from-white to-gray-50/50 p-6 md:p-8 rounded-2xl shadow-sm border border-gray-200">
+                    <h3 className="text-md font-bold text-gray-900 border-b border-gray-200 pb-4 mb-6 flex items-center">
+                      <Shield className="h-5 w-5 mr-2 text-indigo-500" />
+                      Access & Authorizations
+                    </h3>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                      {/* Role selection */}
+                      <div className="flex flex-col space-y-2">
+                        <label className="text-sm font-semibold text-gray-900">
+                          Template Role <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          name="role"
+                          value={newUserData.role}
+                          onChange={handleNewUserChange}
+                          className="h-12 w-full rounded-xl border border-gray-200 bg-white px-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent font-medium shadow-sm transition-all appearance-none cursor-pointer"
+                          required
+                          disabled={editingUser && editingUser._id === user?._id}
+                          style={{
+                            backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
+                            backgroundPosition: 'right 0.75rem center',
+                            backgroundRepeat: 'no-repeat',
+                            backgroundSize: '1.5em 1.5em',
+                            paddingRight: '2.5rem'
+                          }}
+                        >
+                          <option value="cashier">Cashier — Daily point of sale ops</option>
+                          <option value="manager">Manager — Full back-office operations</option>
+                          <option value="inventory">Inventory — Manage stock & ledgers</option>
+                          <option value="admin">Administrator — Full uninhibited access</option>
+                          <option value="viewer">Viewer — Readonly reporting access</option>
+                        </select>
+                        <span className="text-xs font-semibold text-gray-500 mt-1 pl-1">
+                          {editingUser && editingUser._id === user?._id
+                            ? 'LOCKED: You cannot change your own authorization level.'
+                            : 'Selecting a role automatically ticks default required permissions.'}
+                        </span>
+
+                        {rolePermissionsChanged[newUserData.role] && (
+                          <div className="mt-4 p-4 bg-orange-50/80 border border-orange-200 rounded-xl shadow-sm relative overflow-hidden">
+                            <div className="absolute top-0 left-0 w-1 h-full bg-orange-400"></div>
+                            <div className="flex items-start sm:items-center justify-between gap-4 flex-col sm:flex-row pl-2">
+                              <div>
+                                <h4 className="text-sm font-bold text-orange-900 flex items-center">
+                                  <AlertCircle className="w-4 h-4 mr-1.5" /> Overrides Detected
+                                </h4>
+                                <p className="text-xs font-semibold text-orange-700 mt-1">
+                                  You altered <strong>{newUserData.role}</strong> baseline defaults.
+                                </p>
+                              </div>
+                              <Button
+                                type="button"
+                                onClick={() => handleUpdateRolePermissions(newUserData.role)}
+                                disabled={isUpdatingRolePermissions}
+                                className="bg-orange-600 hover:bg-orange-700 text-white font-bold h-9 text-xs rounded-lg shadow-sm whitespace-nowrap px-4"
+                              >
+                                {isUpdatingRolePermissions ? (
+                                  <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                                ) : (
+                                  <Users className="h-3.5 w-3.5 mr-1.5" />
+                                )}
+                                Push to all {newUserData.role}s
+                              </Button>
+                            </div>
+                          </div>
                         )}
                       </div>
-                    </label>
+
+                      {/* Status toggle */}
+                      <div className="flex flex-col space-y-3">
+                        <label className="text-sm font-semibold text-gray-900">
+                          Account Status
+                        </label>
+                        <div className="flex p-1 bg-gray-100 rounded-xl border border-gray-200 w-full sm:w-fit cursor-pointer shadow-inner">
+                          <label className={`flex-1 sm:w-28 flex items-center justify-center py-2.5 px-3 rounded-lg text-sm font-bold cursor-pointer transition-all ${newUserData.status === 'active' ? 'bg-white text-green-700 shadow-sm border border-gray-200/50' : 'text-gray-500 hover:text-gray-900'}`} style={{
+                            opacity: (editingUser && editingUser._id === user?._id) ? 0.6 : 1, pointerEvents: (editingUser && editingUser._id === user?._id) ? 'none' : 'auto'
+                          }}>
+                            <input
+                              type="radio"
+                              name="status"
+                              value="active"
+                              checked={newUserData.status === 'active'}
+                              onChange={handleNewUserChange}
+                              className="sr-only"
+                              disabled={editingUser && editingUser._id === user?._id}
+                            />
+                            <div className={`w-2 h-2 rounded-full mr-2 ${newUserData.status === 'active' ? 'bg-green-500' : 'bg-transparent'}`}></div>
+                            Active
+                          </label>
+                          <label className={`flex-1 sm:w-28 flex items-center justify-center py-2.5 px-3 rounded-lg text-sm font-bold cursor-pointer transition-all ${newUserData.status === 'inactive' ? 'bg-white text-red-700 shadow-sm border border-gray-200/50' : 'text-gray-500 hover:text-gray-900'}`} style={{
+                            opacity: (editingUser && editingUser._id === user?._id) ? 0.6 : 1, pointerEvents: (editingUser && editingUser._id === user?._id) ? 'none' : 'auto'
+                          }}>
+                            <input
+                              type="radio"
+                              name="status"
+                              value="inactive"
+                              checked={newUserData.status === 'inactive'}
+                              onChange={handleNewUserChange}
+                              className="sr-only"
+                              disabled={editingUser && editingUser._id === user?._id}
+                            />
+                            <div className={`w-2 h-2 rounded-full mr-2 ${newUserData.status === 'inactive' ? 'bg-red-500' : 'bg-transparent'}`}></div>
+                            Suspended
+                          </label>
+                        </div>
+                        {editingUser && editingUser._id === user?._id && (
+                          <span className="text-xs font-semibold text-gray-500">
+                            You cannot suspend your own active session.
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Permissions Big Block */}
+                  <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+                    <div className="p-6 md:p-8 border-b border-gray-100 flex flex-col sm:flex-row items-baseline justify-between gap-4">
+                      <div>
+                        <h3 className="text-lg font-black text-gray-900 flex items-center gap-2">
+                          <Check className="h-5 w-5 text-green-600" />
+                          Granular Permissions Matrix
+                        </h3>
+                        <p className="text-sm font-medium text-gray-500 mt-1">
+                          Fine-tune exactly what functionalities this user has rights to interact with globally.
+                        </p>
+                      </div>
+                      <div className="text-xs font-bold text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-100 shadow-sm whitespace-nowrap">
+                        {Object.keys(newUserData.permissions || {}).filter(k=>newUserData.permissions[k]).length} Allowed Rules
+                      </div>
+                    </div>
+
                     {editingUser && editingUser._id === user?._id ? (
-                      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                        <p className="text-sm text-yellow-800">
-                          <strong>Note:</strong> You cannot modify your own permissions. This prevents you from accidentally locking yourself out of the system. Contact another administrator if you need to change your permissions.
+                      <div className="p-10 text-center bg-gray-50 border-t border-dashed border-gray-200">
+                        <div className="inline-flex bg-gray-900 text-white rounded-full p-4 mb-4 shadow-md">
+                          <Lock className="w-8 h-8" />
+                        </div>
+                        <h4 className="text-xl font-bold text-gray-900 mb-2 tracking-tight">Security Lock Engaged</h4>
+                        <p className="text-base text-gray-600 max-w-lg mx-auto font-medium">
+                          You cannot modify your own granular authorization policies. This safeguard guarantees administrators cannot accidentally revoke their own access.
                         </p>
                       </div>
                     ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {Object.entries(permissionCategories).map(([categoryKey, category]) => (
-                          <div key={categoryKey} className="border border-gray-200 rounded-lg p-4 h-fit">
-                            <h4 className="text-sm font-medium text-gray-900 mb-3 border-b border-gray-100 pb-2">
-                              {category.name}
-                            </h4>
-                            <div className="space-y-2 max-h-96 overflow-y-auto">
-                              {category.permissions.map((permission) => (
-                                <div key={permission.key}>
-                                  <label className="flex items-center space-x-2 py-1 hover:bg-gray-50 rounded px-1">
-                                    <input
-                                      type="checkbox"
-                                      checked={newUserData.permissions[permission.key] || false}
-                                      onChange={(e) => handlePermissionChange(permission.key, e.target.checked)}
-                                      className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 flex-shrink-0"
-                                    />
-                                    <span className="text-sm text-gray-700 font-medium truncate">
-                                      {permission.name}
-                                    </span>
-                                  </label>
-                                  {permission.subcategories && permission.subcategories.length > 0 && (
-                                    <div className="ml-4 mt-1 space-y-1">
-                                      {permission.subcategories.map((subcategory, index) => (
-                                        <label key={subcategory.key || index} className="flex items-center space-x-2 py-1 hover:bg-blue-50 rounded px-1">
+                      <div className="p-6 md:p-8 bg-gray-50/50">
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                          {Object.entries(permissionCategories).map(([categoryKey, category]) => {
+                            // Check if all permissions in category are active to show a nice global indicator
+                            const totalPerms = category.permissions.length + category.permissions.reduce((acc, p) => acc + (p.subcategories?.length || 0), 0);
+                            const activePermsCount = category.permissions.filter(p => newUserData.permissions[p.key]).length + 
+                                                   category.permissions.reduce((acc, p) => acc + (p.subcategories?.filter(s => newUserData.permissions[s.key]).length || 0), 0);
+                            const percentActive = totalPerms > 0 ? (activePermsCount / totalPerms) : 0;
+                            
+                            return (
+                              <div key={categoryKey} className="bg-white border border-gray-200 hover:border-blue-300 rounded-xl overflow-hidden shadow-sm hover:shadow transition-all duration-300 pb-2">
+                                <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/80 flex items-center justify-between">
+                                  <h4 className="font-bold text-gray-900 text-sm tracking-tight">{category.name}</h4>
+                                  <div className="flex bg-gray-200 rounded-full h-1.5 w-12 overflow-hidden shadow-inner">
+                                    <div className={`h-full ${percentActive > 0.8 ? 'bg-green-500' : percentActive > 0 ? 'bg-blue-500' : 'bg-transparent'}`} style={{ width: `${percentActive * 100}%` }}></div>
+                                  </div>
+                                </div>
+                                <div className="p-3 space-y-1 max-h-64 overflow-y-auto custom-scrollbar">
+                                  {category.permissions.map((permission) => (
+                                    <div key={permission.key} className="relative">
+                                      <label className="flex items-start space-x-3 py-2 px-2 hover:bg-gray-50 rounded-lg cursor-pointer transition-colors group">
+                                        <div className="flex items-center h-5 mt-0.5">
                                           <input
                                             type="checkbox"
-                                            checked={newUserData.permissions[subcategory.key] || false}
-                                            onChange={(e) => handlePermissionChange(subcategory.key, e.target.checked)}
-                                            className="h-3 w-3 text-blue-600 border-gray-300 rounded focus:ring-blue-500 flex-shrink-0"
+                                            checked={newUserData.permissions[permission.key] || false}
+                                            onChange={(e) => handlePermissionChange(permission.key, e.target.checked)}
+                                            className="w-4 h-4 rounded border-2 border-gray-300 text-blue-600 focus:ring-blue-500 focus:ring-offset-0 transition-all checked:border-blue-600 cursor-pointer"
                                           />
-                                          <span className="text-xs text-gray-600 truncate">
-                                            {subcategory.name}
-                                          </span>
-                                        </label>
-                                      ))}
+                                        </div>
+                                        <span className={`text-sm font-bold truncate transition-colors ${newUserData.permissions[permission.key] ? 'text-gray-900' : 'text-gray-600 group-hover:text-gray-900'}`}>
+                                          {permission.name}
+                                        </span>
+                                      </label>
+                                      
+                                      {permission.subcategories && permission.subcategories.length > 0 && (
+                                        <div className="ml-7 mt-0.5 space-y-0.5 border-l-2 border-gray-100 pl-3 pt-1 pb-2">
+                                          {permission.subcategories.map((subcategory, index) => (
+                                            <label key={subcategory.key || index} className="flex items-start space-x-2 py-1.5 px-2 hover:bg-blue-50 rounded-md cursor-pointer transition-colors group">
+                                              <div className="flex items-center h-4 mt-0.5">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={newUserData.permissions[subcategory.key] || false}
+                                                  onChange={(e) => handlePermissionChange(subcategory.key, e.target.checked)}
+                                                  className="w-3.5 h-3.5 rounded border border-gray-300 text-blue-500 focus:ring-blue-500 opacity-80 checked:opacity-100 transition-all cursor-pointer"
+                                                />
+                                              </div>
+                                              <span className={`text-xs font-semibold truncate transition-colors ${newUserData.permissions[subcategory.key] ? 'text-gray-800' : 'text-gray-500 group-hover:text-gray-700'}`}>
+                                                {subcategory.name}
+                                              </span>
+                                            </label>
+                                          ))}
+                                        </div>
+                                      )}
                                     </div>
-                                  )}
+                                  ))}
                                 </div>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
                   </div>
 
-                  {/* Save Button - Only shown when editing user */}
-                  {editingUser && (
-                    <div className="flex justify-end pt-4 border-t">
-                      <LoadingButton
-                        type="submit"
-                        isLoading={isUpdatingUser}
-                        variant="default"
-                      >
-                        <Edit className="h-4 w-4 mr-2" />
-                        Update User
-                      </LoadingButton>
-                    </div>
-                  )}
+                  {/* Submission Footer */}
+                  <div className="flex justify-end items-center pt-6 px-2 gap-4">
+                    {editingUser && (
+                      <span className="text-sm font-semibold text-gray-500 mr-auto">
+                        Make sure to review changes before committing.
+                      </span>
+                    )}
+                    <LoadingButton
+                      type="submit"
+                      isLoading={editingUser ? isUpdatingUser : isCreatingUser}
+                      variant="default"
+                      className="bg-gray-900 text-white hover:bg-gray-800 hover:shadow-lg rounded-xl px-10 py-3.5 h-auto text-base font-bold transition-all"
+                    >
+                      {editingUser ? (
+                        <>
+                          <Save className="h-5 w-5 mr-2" />
+                          Commit Changes
+                        </>
+                      ) : (
+                        <>
+                          <Check className="h-5 w-5 mr-2" />
+                          Finalize & Create Member
+                        </>
+                      )}
+                    </LoadingButton>
+                  </div>
                 </form>
               </div>
             </div>
@@ -1977,351 +2054,160 @@ export const Settings2 = () => {
 
                 {/* Display Options - these apply to all print previews and printed documents (Sales/Purchase Invoice, Sales/Purchase Order) */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-semibold text-gray-800 mb-2">
                     Display Options
                   </label>
-                  <p className="text-xs text-gray-500 mb-4">
-                    Control what appears on printed invoices and receipts. Uncheck to hide anywhere print is used.
+                  <p className="text-xs text-gray-500 mb-6">
+                    Control what appears on printed invoices and receipts. Uncheck to hide elements anywhere print is used.
                   </p>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                      <input
-                        type="checkbox"
-                        name="showLogo"
-                        checked={printSettings.showLogo}
-                        onChange={handlePrintSettingsChange}
-                        className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                      />
-                      <div>
-                        <div className="text-sm font-medium text-gray-900">Show Logo</div>
-                        <div className="text-xs text-gray-500">Display company logo on printed documents</div>
+
+                  <div className="space-y-8">
+                    {/* General Header Section */}
+                    <div className="space-y-4">
+                      <div className="flex items-center space-x-2 border-b border-gray-100 pb-2">
+                        <div className="p-1.5 bg-blue-50 rounded-lg text-blue-600"><Printer className="h-4 w-4" /></div>
+                        <h4 className="text-sm font-bold text-gray-700">General Header & Layout</h4>
                       </div>
-                    </label>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                        {/* Logo Size Control (Special) */}
+                        <div className="col-span-1 sm:col-span-2 p-4 border border-blue-100 rounded-xl bg-blue-50/20 shadow-sm flex flex-col space-y-3">
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                              <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
+                              Logo Scale
+                            </div>
+                            <div className="text-xs font-black text-blue-700 bg-blue-100 px-2.5 py-1 rounded-full">{printSettings.logoSize || 100}px</div>
+                          </div>
+                          <input
+                            type="range"
+                            name="logoSize"
+                            min="30"
+                            max="350"
+                            step="5"
+                            value={printSettings.logoSize || 100}
+                            onChange={handlePrintSettingsChange}
+                            className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                          />
+                          <div className="flex justify-between text-[10px] text-gray-400 font-bold uppercase tracking-tighter">
+                            <span>Min</span>
+                            <span>Balanced</span>
+                            <span>Max</span>
+                          </div>
+                        </div>
 
-                    {printSettings.invoiceLayout !== 'layout2' && (
-                      <>
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showCompanyDetails"
-                            checked={printSettings.showCompanyDetails}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Company Details</div>
-                            <div className="text-xs text-gray-500">Display address and phone number</div>
+                        {/* Standard Toggle Boxes */}
+                        {[
+                          { id: 'showLogo', label: 'Display Logo', icon: <Printer className="h-3.5 w-3.5" /> },
+                          { id: 'showCompanyDetails', label: 'Company Header', icon: <Building className="h-3.5 w-3.5" />, hidden: printSettings.invoiceLayout === 'layout2' },
+                          { id: 'showEmail', label: 'Show Email', icon: <Mail className="h-3.5 w-3.5" /> },
+                          { id: 'showFooter', label: 'Show Footer', icon: <FileText className="h-3.5 w-3.5" /> },
+                          { id: 'mobilePrintPreview', label: 'Mobile View', icon: <Eye className="h-3.5 w-3.5" /> },
+                          { id: 'showDate', label: 'Doc Date', icon: <Clock className="h-3.5 w-3.5" /> },
+                        ].map(item => !item.hidden && (
+                          <div key={item.id} className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-blue-300 hover:shadow-md transition-all duration-200 group">
+                            <Checkbox
+                              id={item.id}
+                              className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
+                              checked={printSettings[item.id]}
+                              onCheckedChange={(checked) => handlePrintSettingsChange({ target: { name: item.id, type: 'checkbox', checked } })}
+                            />
+                            <Label htmlFor={item.id} className="flex items-center gap-2 text-sm font-semibold text-gray-700 cursor-pointer group-hover:text-blue-700">
+                              <div className="p-1.5 bg-gray-50 rounded-lg text-gray-400 group-hover:bg-blue-50 group-hover:text-blue-500 transition-colors">{item.icon}</div>
+                              {item.label}
+                            </Label>
                           </div>
-                        </label>
+                        ))}
+                      </div>
+                    </div>
 
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showDiscount"
-                            checked={printSettings.showDiscount}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Discount</div>
-                            <div className="text-xs text-gray-500">Display discount information on receipts</div>
+                    {/* Table & Financial Details Section */}
+                    <div className="space-y-4">
+                      <div className="flex items-center space-x-2 border-b border-gray-100 pb-2">
+                        <div className="p-1.5 bg-emerald-50 rounded-lg text-emerald-600"><BarChart3 className="h-4 w-4" /></div>
+                        <h4 className="text-sm font-bold text-gray-700">Financials & Table Info</h4>
+                      </div>
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        {[
+                          { id: 'showTax', label: 'Tax Breakdown' },
+                          { id: 'showDiscount', label: 'Discounts' },
+                          { id: 'showDescription', label: 'Item Desc' },
+                          { id: 'showCameraTime', label: 'Cam Timestamp' },
+                        ].map(item => (
+                          <div key={item.id} className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-emerald-300 hover:shadow-md transition-all duration-200 group">
+                            <Checkbox
+                              id={item.id}
+                              className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600"
+                              checked={printSettings[item.id]}
+                              onCheckedChange={(checked) => handlePrintSettingsChange({ target: { name: item.id, type: 'checkbox', checked } })}
+                            />
+                            <Label htmlFor={item.id} className="text-sm font-semibold text-gray-700 cursor-pointer group-hover:text-emerald-700">
+                              {item.label}
+                            </Label>
                           </div>
-                        </label>
+                        ))}
+                      </div>
+                    </div>
 
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showTax"
-                            checked={printSettings.showTax}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Tax</div>
-                            <div className="text-xs text-gray-500">Display tax calculations on receipts</div>
+                    {/* Party Details Section */}
+                    <div className="space-y-4">
+                      <div className="flex items-center space-x-2 border-b border-gray-100 pb-2">
+                        <div className="p-1.5 bg-amber-50 rounded-lg text-amber-600"><Users className="h-4 w-4" /></div>
+                        <h4 className="text-sm font-bold text-gray-700">Party / Billing Details</h4>
+                      </div>
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        {[
+                          { id: 'showPrintBusinessName', label: 'Business Name' },
+                          { id: 'showPrintContactName', label: 'Contact Name' },
+                          { id: 'showPrintAddress', label: 'Full Address' },
+                          { id: 'showPrintCity', label: 'City' },
+                          { id: 'showPrintState', label: 'State / Prov' },
+                          { id: 'showPrintPostalCode', label: 'Postal Code' },
+                        ].map(item => (
+                          <div key={item.id} className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-amber-300 hover:shadow-md transition-all duration-200 group">
+                            <Checkbox
+                              id={item.id}
+                              className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-amber-600 data-[state=checked]:border-amber-600"
+                              checked={printSettings[item.id]}
+                              onCheckedChange={(checked) => handlePrintSettingsChange({ target: { name: item.id, type: 'checkbox', checked } })}
+                            />
+                            <Label htmlFor={item.id} className="text-sm font-semibold text-gray-700 cursor-pointer group-hover:text-amber-700">
+                              {item.label}
+                            </Label>
                           </div>
-                        </label>
+                        ))}
+                      </div>
+                    </div>
 
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showDate"
-                            checked={printSettings.showDate}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Date</div>
-                            <div className="text-xs text-gray-500">Display transaction date on receipts</div>
+                    {/* Invoice Meta Section */}
+                    <div className="space-y-4">
+                      <div className="flex items-center space-x-2 border-b border-gray-100 pb-2">
+                        <div className="p-1.5 bg-indigo-50 rounded-lg text-indigo-600"><FileText className="h-4 w-4" /></div>
+                        <h4 className="text-sm font-bold text-gray-700">Invoice Meta & Payment</h4>
+                      </div>
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        {[
+                          { id: 'showPrintInvoiceNumber', label: 'Invoice #' },
+                          { id: 'showPrintInvoiceDate', label: 'Inv Date' },
+                          { id: 'showPrintInvoiceStatus', label: 'Doc Status' },
+                          { id: 'showPrintInvoiceType', label: 'Doc Type' },
+                          { id: 'showPrintPaymentStatus', label: 'Pay Status' },
+                          { id: 'showPrintPaymentMethod', label: 'Pay Method' },
+                          { id: 'showPrintPaymentAmount', label: 'Pay Amount' },
+                        ].map(item => (
+                          <div key={item.id} className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-indigo-300 hover:shadow-md transition-all duration-200 group">
+                            <Checkbox
+                              id={item.id}
+                              className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-indigo-600 data-[state=checked]:border-indigo-600"
+                              checked={printSettings[item.id]}
+                              onCheckedChange={(checked) => handlePrintSettingsChange({ target: { name: item.id, type: 'checkbox', checked } })}
+                            />
+                            <Label htmlFor={item.id} className="text-sm font-semibold text-gray-700 cursor-pointer group-hover:text-indigo-700">
+                              {item.label}
+                            </Label>
                           </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showFooter"
-                            checked={printSettings.showFooter}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Footer</div>
-                            <div className="text-xs text-gray-500">Display footer text and generation info</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showCameraTime"
-                            checked={printSettings.showCameraTime}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Camera Time</div>
-                            <div className="text-xs text-gray-500">Display camera interval information</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showEmail"
-                            checked={printSettings.showEmail}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Email</div>
-                            <div className="text-xs text-gray-500">Display customer email address on receipts</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showDescription"
-                            checked={printSettings.showDescription}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Description</div>
-                            <div className="text-xs text-gray-500">Display item descriptions in table</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showProductImages"
-                            checked={printSettings.showProductImages}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Product Images</div>
-                            <div className="text-xs text-gray-500">Display item images in table</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showPrintBusinessName"
-                            checked={printSettings.showPrintBusinessName}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Business Name (Bill To)</div>
-                            <div className="text-xs text-gray-500">Display customer/supplier business name on print</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showPrintContactName"
-                            checked={printSettings.showPrintContactName}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Contact Person Name (Bill To)</div>
-                            <div className="text-xs text-gray-500">Display contact person name on print</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showPrintAddress"
-                            checked={printSettings.showPrintAddress}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Address (Bill To)</div>
-                            <div className="text-xs text-gray-500">Display street address on print</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showPrintCity"
-                            checked={printSettings.showPrintCity}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show City (Bill To)</div>
-                            <div className="text-xs text-gray-500">Display city on print</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showPrintState"
-                            checked={printSettings.showPrintState}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show State (Bill To)</div>
-                            <div className="text-xs text-gray-500">Display state/region on print</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showPrintPostalCode"
-                            checked={printSettings.showPrintPostalCode}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Postal Code (Bill To)</div>
-                            <div className="text-xs text-gray-500">Display postal/zip code on print</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showPrintInvoiceNumber"
-                            checked={printSettings.showPrintInvoiceNumber}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Invoice # (Invoice Details)</div>
-                            <div className="text-xs text-gray-500">Display invoice/order number on print</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showPrintInvoiceDate"
-                            checked={printSettings.showPrintInvoiceDate}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Date (Invoice Details)</div>
-                            <div className="text-xs text-gray-500">Display invoice date on print</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showPrintInvoiceStatus"
-                            checked={printSettings.showPrintInvoiceStatus}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Status (Invoice Details)</div>
-                            <div className="text-xs text-gray-500">Display invoice status on print</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showPrintInvoiceType"
-                            checked={printSettings.showPrintInvoiceType}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Type (Invoice Details)</div>
-                            <div className="text-xs text-gray-500">Display order/invoice type on print</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showPrintPaymentStatus"
-                            checked={printSettings.showPrintPaymentStatus}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Status (Payment)</div>
-                            <div className="text-xs text-gray-500">Display payment status on print</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showPrintPaymentMethod"
-                            checked={printSettings.showPrintPaymentMethod}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Method (Payment)</div>
-                            <div className="text-xs text-gray-500">Display payment method on print</div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="showPrintPaymentAmount"
-                            checked={printSettings.showPrintPaymentAmount}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Show Amount (Payment)</div>
-                            <div className="text-xs text-gray-500">Display payment amount on print</div>
-                          </div>
-                        </label>
-                        <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            name="mobilePrintPreview"
-                            checked={printSettings.mobilePrintPreview}
-                            onChange={handlePrintSettingsChange}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                          />
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">Mobile Print Preview</div>
-                            <div className="text-xs text-gray-500">Use mobile layout for print preview/design</div>
-                          </div>
-                        </label>
-                      </>
-                    )}
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -2336,13 +2222,14 @@ export const Settings2 = () => {
                       <span className="text-orange-600 font-medium"> Please save your company information first to see the preview.</span>
                     )}
                   </p>
-                  <div className="bg-gray-50 border-2 border-dashed border-gray-300 rounded-lg p-8 overflow-hidden flex justify-center items-start min-h-[600px]">
+                  <div className="bg-gray-100 border-2 border-dashed border-gray-300 rounded-lg p-4 md:p-8 overflow-auto flex justify-center items-start min-h-[500px] max-h-[800px] shadow-inner">
                     <div
                       style={
                         printSettings.mobilePrintPreview
-                          ? { maxWidth: 420, width: '100%', transform: 'scale(0.85)', transformOrigin: 'top center', marginBottom: '-200px' }
-                          : { transform: 'scale(0.55)', transformOrigin: 'top center', marginBottom: '-500px' }
+                          ? { maxWidth: 420, width: '100%', transform: 'scale(0.9)', transformOrigin: 'top center', marginBottom: '-100px' }
+                          : { transform: 'scale(0.6)', transformOrigin: 'top center', marginBottom: '-400px', width: '900px' }
                       }
+                      className="transition-transform duration-300 ease-in-out"
                     >
                       <PrintDocument
                         companySettings={{ ...companyData, logo: companyProfile.logo || companyData.logo }}
@@ -2358,17 +2245,10 @@ export const Settings2 = () => {
                 <div className="flex justify-end pt-4 border-t">
                   <LoadingButton
                     type="button"
-                    isLoading={savingCompanySettings}
-                    onClick={() => {
-                      const dataToSend = {
-                        companyName: companyData.companyName,
-                        contactNumber: companyData.contactNumber,
-                        address: companyData.address,
-                        email: companyData.email,
-                        taxId: companyData.taxRegistrationNumber,
-                        printSettings: printSettings
-                      };
-                      handleSaveCompanySettings(dataToSend);
+                    isLoading={isSavingPrintSettings}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      handleSavePrintSettings();
                     }}
                     variant="default"
                   >
@@ -2394,65 +2274,69 @@ export const Settings2 = () => {
               </p>
             </div>
             <div className="card-content">
-              <div className="space-y-4">
-                <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                  <input
-                    type="checkbox"
-                    checked={showProductImagesUI}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      setShowProductImagesUI(checked);
-                      localStorage.setItem('showProductImagesUI', String(checked));
-                      toast.success(`Product images ${checked ? 'shown' : 'hidden'} in UI tables`);
-                      window.dispatchEvent(new Event('productImagesConfigChanged'));
-                    }}
-                    className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                  />
-                  <div>
-                    <div className="text-sm font-medium text-gray-900">Show Product Images in UI Tables</div>
-                    <div className="text-xs text-gray-500">Display product image thumbnails in lists and POS</div>
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {/* Show Product Images */}
+                  <div className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-blue-300 hover:shadow-md transition-all duration-200 group">
+                    <Checkbox
+                      id="showProductImagesUI"
+                      className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
+                      checked={showProductImagesUI}
+                      onCheckedChange={(checked) => {
+                        setShowProductImagesUI(checked);
+                        localStorage.setItem('showProductImagesUI', String(checked));
+                        toast.success(`Product images ${checked ? 'shown' : 'hidden'} in UI tables`);
+                        window.dispatchEvent(new Event('productImagesConfigChanged'));
+                      }}
+                    />
+                    <Label htmlFor="showProductImagesUI" className="flex flex-col cursor-pointer group-hover:text-blue-700">
+                      <span className="text-sm font-semibold">Show Product Images</span>
+                      <span className="text-[10px] text-gray-400">Thumbnails in lists & POS</span>
+                    </Label>
                   </div>
-                </label>
 
-                <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                  <input
-                    type="checkbox"
-                    checked={showProductHsCodeColumn}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      setShowProductHsCodeColumn(checked);
-                      localStorage.setItem('showProductHsCodeColumn', String(checked));
-                      toast.success(`HS Code column ${checked ? 'shown' : 'hidden'} on Products list`);
-                      window.dispatchEvent(new Event('productHsCodeColumnConfigChanged'));
-                    }}
-                    className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                  />
-                  <div>
-                    <div className="text-sm font-medium text-gray-900">Show HS Code Column on Products</div>
-                    <div className="text-xs text-gray-500">Show or hide HS code on the Products list, mobile cards, and add/edit product modal</div>
+                  {/* Show HS Code */}
+                  <div className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-blue-300 hover:shadow-md transition-all duration-200 group">
+                    <Checkbox
+                      id="showProductHsCodeColumn"
+                      className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
+                      checked={showProductHsCodeColumn}
+                      onCheckedChange={(checked) => {
+                        setShowProductHsCodeColumn(checked);
+                        localStorage.setItem('showProductHsCodeColumn', String(checked));
+                        toast.success(`HS Code column ${checked ? 'shown' : 'hidden'} on Products list`);
+                        window.dispatchEvent(new Event('productHsCodeColumnConfigChanged'));
+                      }}
+                    />
+                    <Label htmlFor="showProductHsCodeColumn" className="flex flex-col cursor-pointer group-hover:text-blue-700">
+                      <span className="text-sm font-semibold">Show HS Code Column</span>
+                      <span className="text-[10px] text-gray-400">Include in product lists</span>
+                    </Label>
                   </div>
-                </label>
 
-                <label className="flex items-center space-x-3 p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                  <input
-                    type="checkbox"
-                    checked={accountLedgerShowReturn}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      setAccountLedgerShowReturn(checked);
-                      localStorage.setItem('accountLedgerShowReturnColumn', String(checked));
-                      toast.success(`Return column ${checked ? 'shown' : 'hidden'} in Account Ledger Summary`);
-                      window.dispatchEvent(new Event('accountLedgerConfigChanged'));
-                    }}
-                    className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                  />
-                  <div>
-                    <div className="text-sm font-medium text-gray-900">Show Return Column in Account Ledger Summary</div>
-                    <div className="text-xs text-gray-500">Display the Return column in the Account Ledger Summary customer ledger table</div>
+                  {/* Show Return Column */}
+                  <div className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-blue-300 hover:shadow-md transition-all duration-200 group">
+                    <Checkbox
+                      id="accountLedgerShowReturn"
+                      className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
+                      checked={accountLedgerShowReturn}
+                      onCheckedChange={(checked) => {
+                        setAccountLedgerShowReturn(checked);
+                        localStorage.setItem('accountLedgerShowReturnColumn', String(checked));
+                        toast.success(`Return column ${checked ? 'shown' : 'hidden'} in Account Ledger Summary`);
+                        window.dispatchEvent(new Event('accountLedgerConfigChanged'));
+                      }}
+                    />
+                    <Label htmlFor="accountLedgerShowReturn" className="flex flex-col cursor-pointer group-hover:text-blue-700">
+                      <span className="text-sm font-semibold">Show Ledger Return</span>
+                      <span className="text-[10px] text-gray-400">Column in Ledger Summary</span>
+                    </Label>
                   </div>
-                </label>
+                </div>
 
-                <OrderItemWiseConfirmationSettings />
+                <div className="pt-4 border-t border-gray-100">
+                  <OrderItemWiseConfirmationSettings />
+                </div>
               </div>
             </div>
           </div>
@@ -2460,18 +2344,22 @@ export const Settings2 = () => {
 
         {/* Sidebar Configuration Tab */}
         {activeTab === 'sidebar' && (
-          <div className="card">
-            <div className="card-header">
-              <div className="flex items-center space-x-2">
-                <LayoutDashboard className="h-5 w-5 text-gray-600" />
-                <h2 className="text-lg font-semibold">Sidebar Configuration</h2>
+          <div className="card shadow-lg border-gray-100">
+            <div className="card-header border-b border-gray-50 pb-6">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 bg-indigo-50 rounded-xl text-indigo-600 shadow-sm">
+                  <LayoutDashboard className="h-6 w-6" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900 leading-tight">Sidebar Configuration</h2>
+                  <p className="text-sm text-gray-500 mt-1 font-medium">
+                    Tailor your navigation experience by enabling or disabling specific modules.
+                  </p>
+                </div>
               </div>
-              <p className="text-sm text-gray-600 mt-1">
-                For each section (Sales, Purchase, etc.), choose which individual pages appear in the sidebar. Top-level items like Dashboard use a single toggle.
-              </p>
             </div>
-            <div className="card-content">
-              <div className="space-y-8">
+            <div className="card-content p-6">
+              <div className="space-y-12">
                 {/* Organize by Headings */}
                 {navigation.reduce((acc, current) => {
                   if (current.type === 'heading') {
@@ -2485,78 +2373,90 @@ export const Settings2 = () => {
                   }
                   return acc;
                 }, []).map((section, sIdx) => (
-                  <div key={sIdx} className="space-y-4">
-                    <h3 className={`text-xs font-bold uppercase tracking-wider px-3 py-2 mt-3 mb-1 rounded-md shadow-sm ${section.heading.color || 'bg-gray-100 text-gray-600'} ${section.heading.color ? 'text-white' : ''}`}>
-                      {section.heading.name}
-                    </h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <div key={sIdx} className="space-y-6">
+                    <div className="flex items-center gap-4">
+                      <h3 className={`text-[11px] font-black uppercase tracking-[0.2em] px-4 py-2 rounded-full border shadow-sm ${section.heading.color || 'bg-gray-50 text-gray-500 border-gray-100'} ${section.heading.color ? 'text-white border-transparent' : ''}`}>
+                        {section.heading.name}
+                      </h3>
+                      <div className="h-[1px] flex-1 bg-gradient-to-r from-gray-100 to-transparent"></div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                       {section.items.map((item) => {
                         const hasChildren = item.children && item.children.length > 0;
                         if (hasChildren) {
                           return (
                             <div
                               key={item.name}
-                              className="col-span-1 md:col-span-2 lg:col-span-3 rounded-lg border border-gray-200 bg-gray-50/80 p-4 space-y-3"
+                              className="col-span-1 sm:col-span-2 lg:col-span-4 rounded-2xl border border-gray-200/60 bg-gray-50/40 p-6 space-y-5"
                             >
-                              <div className="flex items-center gap-2 text-sm font-semibold text-gray-800">
-                                {item.icon && <item.icon className="h-4 w-4 text-gray-500 flex-shrink-0" />}
-                                <span>{item.name}</span>
-                                <span className="text-xs font-normal text-gray-500">— each link below</span>
-                              </div>
-                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                                {item.children.map((child) => (
-                                  <div
-                                    key={child.name}
-                                    className="flex items-center space-x-3 p-2.5 bg-white rounded-md border border-gray-100 hover:bg-gray-50 transition-colors"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      id={`sidebar-${section.heading.name}-${item.name}-${child.name}`.replace(/\s+/g, '-')}
-                                      checked={sidebarConfig[child.name] !== false}
-                                      onChange={(e) => {
-                                        const newConfig = { ...sidebarConfig, [child.name]: e.target.checked };
-                                        setSidebarConfig(newConfig);
-                                        localStorage.setItem('sidebarConfig', JSON.stringify(newConfig));
-                                        toast.success(`${child.name} ${e.target.checked ? 'shown' : 'hidden'} in sidebar`);
-                                        window.dispatchEvent(new Event('sidebarConfigChanged'));
-                                      }}
-                                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded cursor-pointer flex-shrink-0"
-                                    />
-                                    <label
-                                      htmlFor={`sidebar-${section.heading.name}-${item.name}-${child.name}`.replace(/\s+/g, '-')}
-                                      className="text-sm font-medium text-gray-700 cursor-pointer flex-1 flex items-center min-w-0"
-                                    >
-                                      {child.icon && <child.icon className="h-4 w-4 mr-2 text-gray-400 flex-shrink-0" />}
-                                      <span className="truncate">{child.name}</span>
-                                    </label>
+                              <div className="flex items-center justify-between border-b border-gray-200/50 pb-4">
+                                <div className="flex items-center gap-3">
+                                  <div className="p-2 bg-white rounded-xl shadow-sm border border-gray-100">
+                                    {item.icon && <item.icon className="h-4 w-4 text-indigo-500 flex-shrink-0" />}
                                   </div>
-                                ))}
+                                  <span className="text-sm font-bold text-gray-800 uppercase tracking-tight">{item.name}</span>
+                                </div>
+                                <span className="text-[10px] font-black text-gray-400 uppercase tracking-tighter bg-gray-100/50 px-2 py-0.5 rounded">Module Links</span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                                {item.children.map((child) => {
+                                  const childId = `sidebar-${section.heading.name}-${item.name}-${child.name}`.replace(/\s+/g, '-');
+                                  return (
+                                    <div
+                                      key={child.name}
+                                      className="flex items-center space-x-3 p-3.5 bg-white rounded-xl border border-gray-100 shadow-sm hover:border-indigo-300 hover:shadow-md transition-all duration-300 group"
+                                    >
+                                      <Checkbox
+                                        id={childId}
+                                        checked={sidebarConfig[child.name] !== false}
+                                        onCheckedChange={(checked) => {
+                                          const newConfig = { ...sidebarConfig, [child.name]: checked };
+                                          setSidebarConfig(newConfig);
+                                          localStorage.setItem('sidebarConfig', JSON.stringify(newConfig));
+                                          toast.success(`${child.name} ${checked ? 'shown' : 'hidden'} in sidebar`);
+                                          window.dispatchEvent(new Event('sidebarConfigChanged'));
+                                        }}
+                                        className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-indigo-600 data-[state=checked]:border-indigo-600 transition-colors"
+                                      />
+                                      <Label
+                                        htmlFor={childId}
+                                        className="text-xs font-bold text-gray-600 cursor-pointer flex-1 flex items-center min-w-0 group-hover:text-indigo-800"
+                                      >
+                                        {child.icon && <child.icon className="h-4 w-4 mr-2 text-gray-400 group-hover:text-indigo-500 flex-shrink-0 transition-colors" />}
+                                        <span className="truncate">{child.name}</span>
+                                      </Label>
+                                    </div>
+                                  );
+                                })}
                               </div>
                             </div>
                           );
                         }
+                        const singleId = `sidebar-${item.name}`.replace(/\s+/g, '-');
                         return (
                           <div
                             key={item.name}
-                            className="flex items-center space-x-3 p-3 hover:bg-gray-50 rounded-lg border border-gray-100 transition-colors"
+                            className="flex items-center space-x-3 p-4 bg-white rounded-xl border border-gray-200 shadow-sm hover:border-indigo-400 hover:shadow-lg transition-all duration-300 group"
                           >
-                            <input
-                              type="checkbox"
-                              id={`sidebar-${item.name}`}
+                            <Checkbox
+                              id={singleId}
                               checked={sidebarConfig[item.name] !== false}
-                              onChange={(e) => {
-                                const newConfig = { ...sidebarConfig, [item.name]: e.target.checked };
+                              onCheckedChange={(checked) => {
+                                const newConfig = { ...sidebarConfig, [item.name]: checked };
                                 setSidebarConfig(newConfig);
                                 localStorage.setItem('sidebarConfig', JSON.stringify(newConfig));
-                                toast.success(`${item.name} ${e.target.checked ? 'shown' : 'hidden'} in sidebar`);
+                                toast.success(`${item.name} ${checked ? 'shown' : 'hidden'} in sidebar`);
                                 window.dispatchEvent(new Event('sidebarConfigChanged'));
                               }}
-                              className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded cursor-pointer"
+                              className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-indigo-600 data-[state=checked]:border-indigo-600 transition-colors"
                             />
-                            <label htmlFor={`sidebar-${item.name}`} className="text-sm font-medium text-gray-700 cursor-pointer flex-1 flex items-center">
-                              {item.icon && <item.icon className="h-4 w-4 mr-2 text-gray-400" />}
+                            <Label htmlFor={singleId} className="flex items-center gap-3 text-sm font-bold text-gray-700 cursor-pointer group-hover:text-indigo-800">
+                              <div className="p-2 bg-gray-50 rounded-xl text-gray-400 group-hover:bg-indigo-50 group-hover:text-indigo-600 transition-all duration-300">
+                                {item.icon && <item.icon className="h-4.5 w-4.5" />}
+                              </div>
                               {item.name}
-                            </label>
+                            </Label>
                           </div>
                         );
                       })}

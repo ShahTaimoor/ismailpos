@@ -8,6 +8,7 @@ export const salesApi = api.injectEndpoints({
         method: 'get',
         params,
       }),
+      keepUnusedDataFor: 90,
       providesTags: (result) =>
         result?.items
           ? [
@@ -36,6 +37,7 @@ export const salesApi = api.injectEndpoints({
         { type: 'Sales', id: 'LAST_PRICES' },
         { type: 'Products', id: 'LIST' },
         { type: 'Products', id: 'SEARCH' },
+        { type: 'Products', id: 'VARIANTS_LIST' },
         { type: 'Inventory', id: 'LIST' },
         { type: 'Inventory', id: 'SUMMARY' },
         { type: 'Inventory', id: 'LOW_STOCK' },
@@ -56,6 +58,7 @@ export const salesApi = api.injectEndpoints({
         { type: 'Reports', id: 'PARTY_BALANCE' },
         { type: 'Reports', id: 'BANK_CASH_SUMMARY' },
         { type: 'Reports', id: 'FINANCIAL_REPORT' },
+        { type: 'Reports', id: 'DASHBOARD_RANGE_SUMMARY' },
       ],
     }),
     getOrders: builder.query({
@@ -84,6 +87,7 @@ export const salesApi = api.injectEndpoints({
         url: 'sales/today/summary',
         method: 'get',
       }),
+      keepUnusedDataFor: 60,
       providesTags: [{ type: 'Sales', id: 'TODAY_SUMMARY' }],
     }),
     getPeriodSummary: builder.query({
@@ -129,6 +133,7 @@ export const salesApi = api.injectEndpoints({
         { type: 'Reports', id: 'PARTY_BALANCE' },
         { type: 'Reports', id: 'BANK_CASH_SUMMARY' },
         { type: 'Reports', id: 'FINANCIAL_REPORT' },
+        { type: 'Reports', id: 'DASHBOARD_RANGE_SUMMARY' },
       ],
     }),
     deleteOrder: builder.mutation({
@@ -164,6 +169,7 @@ export const salesApi = api.injectEndpoints({
         { type: 'Reports', id: 'CUSTOMER_REPORT' },
         { type: 'Reports', id: 'INVENTORY_REPORT' },
         { type: 'Reports', id: 'SUMMARY_CARDS' },
+        { type: 'Reports', id: 'DASHBOARD_RANGE_SUMMARY' },
       ],
     }),
     getLastPrices: builder.query({
@@ -216,6 +222,7 @@ export const salesApi = api.injectEndpoints({
         { type: 'Reports', id: 'INVENTORY_REPORT' },
         { type: 'Reports', id: 'SUMMARY_CARDS' },
         { type: 'Reports', id: 'FINANCIAL_REPORT' },
+        { type: 'Reports', id: 'DASHBOARD_RANGE_SUMMARY' },
       ],
     }),
     syncSalesLedger: builder.mutation({
@@ -244,6 +251,7 @@ export const salesApi = api.injectEndpoints({
         { type: 'Reports', id: 'INVENTORY_REPORT' },
         { type: 'Reports', id: 'SUMMARY_CARDS' },
         { type: 'Reports', id: 'FINANCIAL_REPORT' },
+        { type: 'Reports', id: 'DASHBOARD_RANGE_SUMMARY' },
       ],
     }),
   }),
@@ -254,6 +262,7 @@ export const {
   useGetSalesQuery,
   useCreateSaleMutation,
   useGetOrdersQuery,
+  useLazyGetOrdersQuery,
   useGetOrderByIdQuery,
   useLazyGetOrderByIdQuery,
   useGetTodaySummaryQuery,

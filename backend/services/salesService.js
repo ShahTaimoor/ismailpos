@@ -14,6 +14,7 @@ const discountService = require('./discountService');
 const paymentRepository = require('../repositories/postgres/PaymentRepository');
 const settingsService = require('./settingsService');
 const purchaseInvoiceRepository = require('../repositories/postgres/PurchaseInvoiceRepository');
+const { withBusinessTransaction } = require('./withBusinessTransaction');
 
 // Helper function to parse date string as local date (not UTC)
 const parseLocalDate = (dateString) => {
@@ -514,7 +515,16 @@ class SalesService {
       // Try to find as product first, then as variant
       let product = null;
       let isVariant = false;
-      const isManual = item.isManual === true;
+      const productRef = item.product;
+      const productRefStr =
+        typeof productRef === 'string'
+          ? productRef
+          : productRef != null && (productRef.id != null || productRef._id != null)
+            ? String(productRef.id ?? productRef._id)
+            : '';
+      const isManual =
+        item.isManual === true ||
+        (productRefStr.startsWith('manual_'));
 
       if (!isManual) {
         product = await productRepository.findById(item.product, true);
@@ -550,7 +560,12 @@ class SalesService {
       const itemSubtotal = item.quantity * unitPrice;
       const itemDiscount = itemSubtotal * (itemDiscountPercent / 100);
       const itemTaxable = itemSubtotal - itemDiscount;
-      const taxRate = isManual ? 0 : (isVariant ? (product.baseProduct?.taxSettings?.taxRate ?? 0) : (product.tax_settings?.tax_rate ?? product.taxSettings?.taxRate ?? 0));
+      const taxRate =
+        isManual || !product
+          ? 0
+          : isVariant
+            ? (product.baseProduct?.taxSettings?.taxRate ?? 0)
+            : (product.tax_settings?.tax_rate ?? product.taxSettings?.taxRate ?? 0);
       const itemTax = isTaxExempt ? 0 : itemTaxable * taxRate;
 
       let unitCost = 0;
@@ -564,9 +579,13 @@ class SalesService {
         }
         if (unitCost === 0) unitCost = product.pricing?.cost ?? product.cost_price ?? 0;
       } else {
-        // Manual item
+        // Manual item: COGS/P&L use line unitCost (POS may send cost entered at sale time)
         productId = item.product || `manual_${Date.now()}`;
-        unitCost = 0; // Cost is unknown for manual items
+        const fromPayload = parseFloat(
+          item.unitCost ?? item.unit_cost ?? item.costPrice ?? item.cost_price ?? 0
+        );
+        unitCost =
+          Number.isFinite(fromPayload) && fromPayload >= 0 ? fromPayload : 0;
       }
 
       orderItems.push({
@@ -574,6 +593,7 @@ class SalesService {
         name: product ? (product.name || product.displayName || 'Product') : (item.name || 'Manual Item'),
         sku: product ? (product.sku || null) : (item.sku || null),
         isManual: !!isManual || !product,
+        imageUrl: item.imageUrl || item.image_url || null,
         quantity: item.quantity,
         unitCost,
         unitPrice,
@@ -623,27 +643,10 @@ class SalesService {
       }
     }
 
-    // Inventory Updates (unless skipped)
-    if (!skipInventoryUpdate) {
-      for (const item of orderItems) {
-        // Skip stock movement for manual items
-        if (item.isManual) continue;
-
-        await inventoryService.updateStock({
-          productId: item.product,
-          type: 'out',
-          quantity: item.quantity,
-          reason: 'Sales Invoice Creation',
-          reference: 'Sales Invoice',
-          performedBy: user._id,
-          notes: `Stock reduced due to sales invoice creation`
-        });
-      }
-    }
-
     let orderNumber = data.orderNumber;
     // Settings already fetched at top
 
+    let nextInvoiceSequence = null;
     if (orderSettings.invoiceSequenceEnabled) {
       const prefix = orderSettings.invoiceSequencePrefix || 'INV-';
       const nextNum = orderSettings.invoiceSequenceNext || 1;
@@ -653,14 +656,7 @@ class SalesService {
       if (!orderNumber) {
         orderNumber = `${prefix}${String(nextNum).padStart(padding, '0')}`;
       }
-
-      // Always increment next number in settings if it's a NEW sale
-      await settingsService.updateCompanySettings({
-        orderSettings: {
-          ...orderSettings,
-          invoiceSequenceNext: nextNum + 1
-        }
-      });
+      nextInvoiceSequence = nextNum + 1;
     }
 
     if (!orderNumber) {
@@ -688,22 +684,72 @@ class SalesService {
       orderType: orderType || 'retail'
     };
 
-    const order = await transaction(async (client) => {
-      return await salesRepository.create(saleData, client);
-    });
-
-    // Record discount usage for each applied code (so usage limits are updated)
-    for (const applied of appliedDiscountsForSale) {
-      const code = applied.code || applied.discountCode;
-      const amount = Number(applied.amount ?? 0);
-      if (code && amount >= 0) {
-        try {
-          await discountService.recordDiscountUsage(code, customer || null, amount, order.id);
-        } catch (e) {
-          console.error('Failed to record discount usage for', code, e.message);
+    const order = await withBusinessTransaction(async ({ client, addPostCommit }) => {
+      // Inventory updates must commit/rollback with sale creation.
+      if (!skipInventoryUpdate) {
+        for (const item of orderItems) {
+          if (item.isManual) continue;
+          await inventoryService.updateStock({
+            productId: item.product,
+            type: 'out',
+            quantity: item.quantity,
+            reason: 'Sales Invoice Creation',
+            reference: 'Sales Invoice',
+            performedBy: user._id,
+            notes: 'Stock reduced due to sales invoice creation'
+          }, { client });
         }
       }
-    }
+
+      const createdOrder = await salesRepository.create(saleData, client);
+
+      // Core ledger posting is part of transactional truth for a sale.
+      await AccountingService.recordSale(createdOrder, { client });
+
+      if (amountPaidAtCreate > 0 && customer) {
+        await AccountingService.recordSalePaymentAdjustment({
+          saleId: createdOrder.id || createdOrder._id,
+          orderNumber: createdOrder.order_number || createdOrder.orderNumber,
+          customerId: customer,
+          oldAmountPaid: 0,
+          newAmountPaid: amountPaidAtCreate,
+          paymentMethod: payment?.method || 'cash',
+          createdBy: user?.id || user?._id
+        }, { client });
+      }
+
+      // Non-critical updates remain post-commit.
+      addPostCommit(async () => {
+        if (nextInvoiceSequence !== null) {
+          try {
+            await settingsService.updateCompanySettings({
+              orderSettings: {
+                ...orderSettings,
+                invoiceSequenceNext: nextInvoiceSequence
+              }
+            });
+          } catch (seqErr) {
+            console.error('Failed to update invoice sequence after sale creation:', seqErr?.message || seqErr);
+          }
+        }
+      });
+
+      addPostCommit(async () => {
+        for (const applied of appliedDiscountsForSale) {
+          const code = applied.code || applied.discountCode;
+          const amount = Number(applied.amount ?? 0);
+          if (code && amount >= 0) {
+            try {
+              await discountService.recordDiscountUsage(code, customer || null, amount, createdOrder.id);
+            } catch (e) {
+              console.error('Failed to record discount usage for', code, e.message);
+            }
+          }
+        }
+      });
+
+      return createdOrder;
+    });
 
     const paymentStatus = order.payment_status ?? order.paymentStatus ?? saleData.paymentStatus;
     const orderStatus = order.status ?? saleData.status;
@@ -791,25 +837,6 @@ class SalesService {
       }
     }
 
-    await AccountingService.recordSale(order, {});
-
-    // Post payment to ledger when sale is created with amount paid (so balance reflects payment)
-    if (amountPaidAtCreate > 0 && customer) {
-      try {
-        await AccountingService.recordSalePaymentAdjustment({
-          saleId: order.id || order._id,
-          orderNumber: order.order_number || order.orderNumber,
-          customerId: customer,
-          oldAmountPaid: 0,
-          newAmountPaid: amountPaidAtCreate,
-          paymentMethod: payment?.method || 'cash',
-          createdBy: user?.id || user?._id
-        });
-      } catch (ledgerErr) {
-        console.error('Failed to post sale payment to ledger on create:', ledgerErr);
-      }
-    }
-
     const createdSale = await this.getSalesOrderById(order.id || order._id);
     return createdSale;
   }
@@ -893,34 +920,42 @@ class SalesService {
       throw new Error('Order not found');
     }
 
-    // Update status in PostgreSQL
-    const updatedOrder = await salesRepository.update(id, {
+    if (status === 'cancelled') {
+      return await transaction(async (client) => {
+        const updatedOrder = await salesRepository.update(id, {
+          status,
+          updatedBy: user.id || user._id?.toString()
+        }, client);
+
+        if (order.items) {
+          const items = Array.isArray(order.items) ? order.items : [];
+          for (const item of items) {
+            if (item.product) {
+              await inventoryService.updateStock({
+                productId: item.product,
+                type: 'in',
+                quantity: item.quantity || 0,
+                reason: 'Sale cancelled',
+                reference: 'Sales',
+                referenceId: order.id,
+                performedBy: user.id || user._id?.toString(),
+                notes: 'Stock restored due to sale cancellation'
+              }, { client });
+            }
+          }
+        }
+
+        // Note: Reversing customer balance is now handled by the ledger/transactions.
+        // If we need to reverse a specific transaction, we should call customerTransactionService.reverseTransaction.
+        return updatedOrder;
+      });
+    }
+
+    // Non-cancel status updates are single-row and do not require inventory mutation.
+    return await salesRepository.update(id, {
       status,
       updatedBy: user.id || user._id?.toString()
     });
-
-    if (status === 'cancelled' && order.items) {
-      const items = Array.isArray(order.items) ? order.items : [];
-      for (const item of items) {
-        if (item.product) {
-          await inventoryService.updateStock({
-            productId: item.product,
-            type: 'in',
-            quantity: item.quantity || 0,
-            reason: 'Sale cancelled',
-            reference: 'Sales',
-            referenceId: order.id,
-            performedBy: user.id || user._id?.toString(),
-            notes: 'Stock restored due to sale cancellation'
-          });
-        }
-      }
-
-      // Note: Reversing customer balance is now handled by the ledger/transactions.
-      // If we need to reverse a specific transaction, we should call customerTransactionService.reverseTransaction.
-    }
-
-    return updatedOrder;
   }
 
   /**

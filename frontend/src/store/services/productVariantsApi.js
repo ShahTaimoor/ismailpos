@@ -8,6 +8,7 @@ export const productVariantsApi = api.injectEndpoints({
         method: 'get',
         params,
       }),
+      keepUnusedDataFor: 60,
       providesTags: (result) => {
         const list = result?.data?.variants || result?.variants || result?.items || [];
         return list.length

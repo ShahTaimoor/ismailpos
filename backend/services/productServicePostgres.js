@@ -35,6 +35,29 @@ async function resolveCategoryId(categoryOrName) {
   return cat ? cat.id : null;
 }
 
+async function resolveOrCreateCategoryId(categoryOrName) {
+  if (categoryOrName == null || categoryOrName === '') return null;
+  const s = String(categoryOrName).trim();
+  if (!s) return null;
+  if (UUID_REGEX.test(s)) return s;
+
+  const existing = await categoryRepository.findByName(s);
+  if (existing) return existing.id;
+
+  try {
+    const created = await categoryRepository.create({
+      name: s,
+      isActive: true
+    });
+    return created?.id || null;
+  } catch (err) {
+    // Handle concurrent imports creating the same category.
+    const retry = await categoryRepository.findByName(s);
+    if (retry) return retry.id;
+    throw err;
+  }
+}
+
 function toApiProduct(row, categoryMap = null) {
   if (!row) return null;
   const id = row.id;
@@ -117,7 +140,14 @@ async function getCategoryMap(categoryIds) {
 class ProductServicePostgres {
   buildFilter(queryParams) {
     const filters = {};
-    if (queryParams.search) filters.search = queryParams.search;
+    const code = queryParams.code != null && String(queryParams.code).trim() !== ''
+      ? String(queryParams.code).trim()
+      : null;
+    if (code) {
+      filters.exactCode = code;
+    } else if (queryParams.search) {
+      filters.search = queryParams.search;
+    }
     if (queryParams.category) filters.categoryId = queryParams.category;
     else if (queryParams.categories) {
       try {
@@ -133,10 +163,15 @@ class ProductServicePostgres {
   }
 
   async getProducts(queryParams) {
+    const MAX_PAGE = 200;
+    const MAX_EXPORT = 10000;
     const getAll = queryParams.all === 'true' || queryParams.all === true ||
-      (queryParams.limit && parseInt(queryParams.limit) >= 999999);
-    const page = getAll ? 1 : (parseInt(queryParams.page) || 1);
-    const limit = getAll ? 999999 : (parseInt(queryParams.limit) || 20);
+      (queryParams.limit && parseInt(queryParams.limit, 10) >= 999999);
+    const page = getAll ? 1 : (parseInt(queryParams.page, 10) || 1);
+    let limit = getAll
+      ? Math.min(parseInt(queryParams.limit, 10) || MAX_EXPORT, MAX_EXPORT)
+      : Math.min(parseInt(queryParams.limit, 10) || 20, MAX_PAGE);
+    if (!getAll && (!Number.isFinite(limit) || limit < 1)) limit = 20;
 
     const filters = this.buildFilter(queryParams);
     const result = await productRepository.findWithPagination(filters, { page, limit });
@@ -692,7 +727,8 @@ class ProductServicePostgres {
     const categoryMap = await getCategoryMap(categoryIds);
     return rows.map(p => toApiProduct(p, categoryMap));
   }
-  async bulkCreateProducts(productsData, userId, req = null) {
+  async bulkCreateProducts(productsData, userId, req = null, options = {}) {
+    const { autoCreateCategories = true } = options;
     const results = { created: 0, failed: 0, errors: [] };
     
     for (const item of productsData) {
@@ -717,6 +753,14 @@ class ProductServicePostgres {
 
         if (!formattedProduct.name) {
           throw new Error('Product name is missing');
+        }
+
+        // Import behavior toggle: create missing category names only when enabled.
+        if (formattedProduct.category) {
+          const resolvedCategoryId = autoCreateCategories
+            ? await resolveOrCreateCategoryId(formattedProduct.category)
+            : await resolveCategoryId(formattedProduct.category);
+          formattedProduct.category = resolvedCategoryId || formattedProduct.category;
         }
 
         await this.createProduct(formattedProduct, userId, req);

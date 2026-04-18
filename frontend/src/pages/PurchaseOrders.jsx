@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   FileText,
   Plus,
@@ -27,11 +28,15 @@ import {
   Camera
 } from 'lucide-react';
 import BaseModal from '../components/BaseModal';
-import { useGetSuppliersQuery, useGetSupplierQuery } from '../store/services/suppliersApi';
-import { useGetProductsQuery } from '../store/services/productsApi';
-import { useGetVariantsQuery } from '../store/services/productVariantsApi';
+import PaginationControls from '../components/PaginationControls';
+import ExcelExportButton from '../components/ExcelExportButton';
+import PdfExportButton from '../components/PdfExportButton';
+import { suppliersApi, useGetSupplierQuery } from '../store/services/suppliersApi';
+import { useAppDispatch } from '../store/hooks';
+import { useDebouncedSupplierSearch } from '../hooks/useDebouncedSupplierSearch';
 import {
   useGetPurchaseOrdersQuery,
+  useLazyGetPurchaseOrdersQuery,
   useGetPurchaseOrderQuery,
   useLazyGetPurchaseOrderQuery,
   useCreatePurchaseOrderMutation,
@@ -48,7 +53,7 @@ import {
   OrderConfirmSelectedActions,
   getItemConfirmationStatus,
 } from '../components/OrderItemConfirmationCell';
-import { useFuzzySearch } from '../hooks/useFuzzySearch';
+import { useDebouncedPosProductSearch } from '../hooks/useDebouncedPosProductSearch';
 import { SearchableDropdown } from '../components/SearchableDropdown';
 import { DualUnitQuantityInput } from '../components/DualUnitQuantityInput';
 import { hasDualUnit, getPiecesPerBox, piecesToBoxesAndPieces, formatStockDualLabel } from '../utils/dualUnitUtils';
@@ -310,7 +315,7 @@ export const PurchaseOrders = ({ tabId }) => {
 
   const [pagination, setPagination] = useState({
     page: 1,
-    limit: 999999 // Get all purchase orders without pagination
+    limit: 50
   });
 
   const [sortConfig, setSortConfig] = useState({
@@ -395,10 +400,32 @@ export const PurchaseOrders = ({ tabId }) => {
 
   const [previewImageProduct, setPreviewImageProduct] = useState(null);
 
+  const poCartScrollRef = useRef(null);
+  const poCartLineElRefs = useRef(new Map());
+  const [highlightedPoLineIndex, setHighlightedPoLineIndex] = useState(null);
+  const poCartNeedsInnerScroll = formData.items.length > 10;
+
+  useLayoutEffect(() => {
+    if (highlightedPoLineIndex === null) return;
+    const idx = highlightedPoLineIndex;
+    poCartScrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (poCartNeedsInnerScroll) {
+      poCartLineElRefs.current.get(idx)?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    } else {
+      requestAnimationFrame(() => {
+        poCartLineElRefs.current.get(idx)?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      });
+    }
+  }, [highlightedPoLineIndex, poCartNeedsInnerScroll, formData.items.length]);
+
+  useEffect(() => {
+    if (formData.items.length === 0) setHighlightedPoLineIndex(null);
+  }, [formData.items.length]);
+
   // Auto-focus on product search field when component mounts
   useEffect(() => {
     if (productSearchRef.current) {
-      productSearchRef.current.focus();
+      productSearchRef.current.focus({ preventScroll: true });
     }
   }, []);
 
@@ -457,9 +484,9 @@ export const PurchaseOrders = ({ tabId }) => {
     if (filters.supplier) {
       params.supplier = filters.supplier;
     }
-
-    // Note: sortConfig and paymentStatus are not supported by backend
-    // Sorting is handled client-side if needed
+    if (filters.paymentStatus) {
+      params.paymentStatus = filters.paymentStatus;
+    }
 
     return params;
   }, [filters, pagination]);
@@ -472,18 +499,16 @@ export const PurchaseOrders = ({ tabId }) => {
     refetch,
   } = useGetPurchaseOrdersQuery(queryParams, { refetchOnMountOrArgChange: true });
 
-  // Fetch suppliers for dropdown
-  const { data: suppliersData, isLoading: suppliersLoading, refetch: refetchSuppliers } = useGetSuppliersQuery(
-    { search: '', limit: 999999 },
-    {
-      skip: false,
-      staleTime: 0, // Always consider data stale to get fresh balance information
-      refetchOnMountOrArgChange: true, // Refetch when component mounts or params change
-    }
+  const [fetchPurchaseOrdersForExport] = useLazyGetPurchaseOrdersQuery();
+
+  const dispatch = useAppDispatch();
+  const { suppliers, isLoading: suppliersLoading, isFetching: suppliersFetching } = useDebouncedSupplierSearch(
+    supplierSearchTerm,
+    { selectedSupplier }
   );
-  const suppliers = React.useMemo(() => {
-    return suppliersData?.data?.suppliers || suppliersData?.suppliers || [];
-  }, [suppliersData]);
+  const invalidateSuppliersList = () => {
+    dispatch(suppliersApi.util.invalidateTags([{ type: 'Suppliers', id: 'LIST' }]));
+  };
 
   // Fetch complete supplier data when supplier is selected (for immediate balance updates)
   const { data: completeSupplierData, refetch: refetchSupplier } = useGetSupplierQuery(
@@ -507,106 +532,18 @@ export const PurchaseOrders = ({ tabId }) => {
   const { data: viewOrderData } = useGetPurchaseOrderQuery(viewOrderId, { skip: !viewOrderId });
   const viewOrder = viewOrderFresh || viewOrderData?.data?.purchaseOrder || viewOrderData?.purchaseOrder || selectedOrder;
 
-  // Fetch all active products for client-side fuzzy search
-  const { data: allProductsData, isLoading: productsLoading } = useGetProductsQuery(
-    { limit: 999999, status: 'active' }, // Get all active products
-    {
-      keepPreviousData: true,
-      staleTime: 30000, // Cache for 30 seconds
-    }
-  );
+  const {
+    items: productsData,
+    isLoading: lineProductSearchLoading,
+    emptyMessage: lineProductEmptyMessage,
+  } = useDebouncedPosProductSearch(productSearchTerm, { dropdownLimit: 120 });
 
-  // Fetch all variants for search
-  const { data: variantsData, isLoading: variantsLoading } = useGetVariantsQuery(
-    { status: 'active' },
-    {
-      keepPreviousData: true,
-      staleTime: 30000,
-    }
-  );
+  const {
+    items: modalProductsData,
+    isLoading: modalProductSearchLoading,
+  } = useDebouncedPosProductSearch(modalProductSearchTerm, { dropdownLimit: 120 });
 
-  // Extract products array from RTK Query response
-  const allProducts = React.useMemo(() => {
-    if (allProductsData?.data?.products) return allProductsData.data.products;
-    if (allProductsData?.products) return allProductsData.products;
-    if (allProductsData?.data?.data?.products) return allProductsData.data.data.products;
-    return [];
-  }, [allProductsData]);
-
-  // Extract variants array from RTK Query response
-  const allVariants = React.useMemo(() => {
-    if (!variantsData) return [];
-    if (Array.isArray(variantsData)) return variantsData;
-    if (variantsData?.data?.variants) return variantsData.data.variants;
-    if (variantsData?.variants) return variantsData.variants;
-    return [];
-  }, [variantsData]);
-
-  // Combine products and variants for search, marking variants with isVariant flag
-  const allItems = React.useMemo(() => {
-    const productsList = allProducts.map(p => ({ ...p, isVariant: false }));
-    const variantsList = allVariants
-      .filter(v => v.status === 'active')
-      .map(v => ({
-        ...v,
-        isVariant: true,
-        // Use variant's display name for search, but keep variant data
-        name: v.displayName || v.variantName || `${v.baseProduct?.name || ''} - ${v.variantValue || ''}`,
-        // Use variant pricing and inventory
-        pricing: v.pricing || { retail: 0, wholesale: 0, cost: 0 },
-        inventory: v.inventory || { currentStock: 0, reorderPoint: 0 },
-        // Keep reference to base product
-        baseProductId: v.baseProduct?._id || v.baseProduct,
-        baseProductName: v.baseProduct?.name || '',
-        variantType: v.variantType,
-        variantValue: v.variantValue,
-        variantName: v.variantName,
-      }));
-    return [...productsList, ...variantsList];
-  }, [allProducts, allVariants]);
-
-  const fuzzySearchResults = useFuzzySearch(
-    allItems,
-    productSearchTerm,
-    ['name', 'description', 'brand', 'displayName', 'variantValue', 'variantName'],
-    {
-      threshold: 0.4,
-      minScore: 0.3,
-      limit: null // Show unlimited products
-    }
-  );
-
-  // Show all results when searching
-  const productsData = React.useMemo(() => {
-    if (!productSearchTerm || productSearchTerm.trim().length === 0) {
-      // Show all items when no search term
-      return allItems;
-    }
-    return fuzzySearchResults;
-  }, [productSearchTerm, allItems, fuzzySearchResults]);
-
-  // Fetch products for modal (use same cached data with fuzzy search)
-  const modalFuzzySearchResults = useFuzzySearch(
-    allItems,
-    modalProductSearchTerm,
-    ['name', 'description', 'brand', 'displayName', 'variantValue', 'variantName'],
-    {
-      threshold: 0.4,
-      minScore: 0.3,
-      limit: null // Show unlimited products
-    }
-  );
-
-  // Show all results when searching
-  const modalProductsData = React.useMemo(() => {
-    if (!modalProductSearchTerm || modalProductSearchTerm.trim().length === 0) {
-      // Show all items when no search term
-      return allItems;
-    }
-    return modalFuzzySearchResults;
-  }, [modalProductSearchTerm, allItems, modalFuzzySearchResults]);
-
-  const modalProductsLoading = productsLoading || variantsLoading;
+  const modalProductsLoading = modalProductSearchLoading;
 
   // Auto-scroll selected product into view when navigating with keyboard
   useEffect(() => {
@@ -653,6 +590,7 @@ export const PurchaseOrders = ({ tabId }) => {
     setQuantity(1);
     setCustomCost('');
     setSearchKey(prev => prev + 1); // Force re-render of search components
+    setHighlightedPoLineIndex(null);
 
     // Reset tab title to default
     if (updateTabTitle && getActiveTab) {
@@ -806,10 +744,17 @@ export const PurchaseOrders = ({ tabId }) => {
       totalCost
     };
 
-    setFormData(prev => ({
-      ...prev,
-      items: [...prev.items, newItem]
-    }));
+    let addedLineIndex = null;
+    setFormData(prev => {
+      addedLineIndex = prev.items.length;
+      return {
+        ...prev,
+        items: [...prev.items, newItem]
+      };
+    });
+    if (addedLineIndex !== null && addedLineIndex >= 0) {
+      setHighlightedPoLineIndex(addedLineIndex);
+    }
 
     // Reset product selection
     setSelectedProduct(null);
@@ -821,7 +766,7 @@ export const PurchaseOrders = ({ tabId }) => {
     // Focus back to product search input
     setTimeout(() => {
       if (productSearchRef.current) {
-        productSearchRef.current.focus();
+        productSearchRef.current.focus({ preventScroll: true });
       }
     }, 100);
   };
@@ -923,9 +868,9 @@ export const PurchaseOrders = ({ tabId }) => {
         toast.success('Purchase order created successfully');
 
         // Refetch suppliers list to update balances (so new supplier selection works without refresh)
-        if (refetchSuppliers && typeof refetchSuppliers === 'function') {
+        if (invalidateSuppliersList && typeof invalidateSuppliersList === 'function') {
           try {
-            refetchSuppliers();
+            invalidateSuppliersList();
           } catch (error) {
             // Failed to refetch suppliers - silent fail
           }
@@ -997,9 +942,9 @@ export const PurchaseOrders = ({ tabId }) => {
         }
 
         // Also refetch suppliers list to update balances
-        if (refetchSuppliers && typeof refetchSuppliers === 'function') {
+        if (invalidateSuppliersList && typeof invalidateSuppliersList === 'function') {
           try {
-            refetchSuppliers();
+            invalidateSuppliersList();
           } catch (error) {
             // Failed to refetch suppliers - silent fail
           }
@@ -1247,8 +1192,73 @@ export const PurchaseOrders = ({ tabId }) => {
     return [];
   }, [purchaseOrdersData]);
 
+  const poTableScrollRef = useRef(null);
+  const virtualizePoRows = purchaseOrders.length > 35;
+  const poRowVirtualizer = useVirtualizer({
+    count: purchaseOrders.length,
+    getScrollElement: () => poTableScrollRef.current,
+    estimateSize: () => 56,
+    overscan: 12,
+  });
+
   const paginationInfo = purchaseOrdersData?.data?.pagination || purchaseOrdersData?.pagination || {};
   const { subtotal, tax, total, supplierOutstanding, totalPayables } = calculateTotals();
+
+  const purchaseOrdersExportParams = useMemo(() => {
+    const params = { all: true };
+    if (filters.fromDate) params.dateFrom = filters.fromDate;
+    if (filters.toDate) params.dateTo = filters.toDate;
+    if (filters.poNumber) params.search = filters.poNumber;
+    if (filters.status) params.status = filters.status;
+    if (filters.supplier) params.supplier = filters.supplier;
+    if (filters.paymentStatus) params.paymentStatus = filters.paymentStatus;
+    return params;
+  }, [filters]);
+
+  const getExportData = useCallback(async () => {
+    try {
+      const res = await fetchPurchaseOrdersForExport(purchaseOrdersExportParams).unwrap();
+      const allRows = res?.purchaseOrders ?? res?.data?.purchaseOrders ?? [];
+      return {
+        title: 'Purchase Orders Report',
+        filename: `Purchase_Orders_${filters.fromDate}_to_${filters.toDate}.xlsx`,
+        company: {
+          name: companySettings?.companyName || 'ZARYAB IMPEX',
+          address: companySettings?.address || companySettings?.billingAddress || '',
+          contact: `${companySettings?.contactNumber || ''} ${companySettings?.email ? '| ' + companySettings.email : ''}`.trim()
+        },
+        columns: [
+          { header: 'S.No', key: 'sno', width: 8, type: 'number' },
+          { header: 'PO #', key: 'poNumber', width: 22 },
+          { header: 'Supplier', key: 'supplierName', width: 35 },
+          { header: 'Date', key: 'date', width: 15 },
+          { header: 'Status', key: 'status', width: 18 },
+          { header: 'Total', key: 'total', width: 14, type: 'currency' }
+        ],
+        data: allRows.map((order, i) => ({
+          sno: i + 1,
+          poNumber: order.purchase_order_number || order.poNumber || order.po_number || '—',
+          supplierName: safeRender(order.supplier) || 'Unknown',
+          date: formatDate(order.purchase_date || order.order_date || order.created_at || order.createdAt),
+          status: String(order?.status || '—').replace(/_/g, ' '),
+          total: Number(order.total || 0)
+        })),
+        summary: {
+          rows: [
+            {
+              label: 'GRAND TOTAL:',
+              poNumber: `${allRows.length} orders`,
+              total: allRows.reduce((sum, o) => sum + Number(o.total || 0), 0)
+            }
+          ]
+        }
+      };
+    } catch (err) {
+      const msg = err?.data?.message || err?.message || 'Could not load purchase orders for export';
+      toast.error(msg);
+      return null;
+    }
+  }, [fetchPurchaseOrdersForExport, purchaseOrdersExportParams, filters.fromDate, filters.toDate, companySettings]);
 
   return (
     <div className="space-y-4 lg:space-y-6">
@@ -1307,7 +1317,7 @@ export const PurchaseOrders = ({ tabId }) => {
             onSearch={handleSupplierSearch}
             displayKey={supplierDisplayKey}
             selectedItem={selectedSupplier}
-            loading={suppliersLoading}
+            loading={suppliersLoading || suppliersFetching}
             emptyMessage={supplierSearchTerm.length > 0 ? "No suppliers found" : "Start typing to search suppliers..."}
             value={supplierSearchTerm}
           />
@@ -1374,8 +1384,8 @@ export const PurchaseOrders = ({ tabId }) => {
                     onSearch={handleProductSearch}
                     displayKey={productDisplayKey}
                     selectedItem={selectedProduct}
-                    loading={productsLoading || variantsLoading}
-                    emptyMessage={productSearchTerm.length > 0 ? "No products found" : "Start typing to search products..."}
+                    loading={lineProductSearchLoading}
+                    emptyMessage={lineProductEmptyMessage}
                     value={productSearchTerm}
                   />
                 </div>
@@ -1440,6 +1450,7 @@ export const PurchaseOrders = ({ tabId }) => {
                       step="1"
                       value={customCost}
                       onChange={(e) => setCustomCost(e.target.value)}
+                      onFocus={(e) => e.target.select()}
                       onKeyDown={handleInputKeyDown}
                       className="text-center h-10 w-full"
                       placeholder="0"
@@ -1480,8 +1491,8 @@ export const PurchaseOrders = ({ tabId }) => {
                     onSearch={handleProductSearch}
                     displayKey={productDisplayKey}
                     selectedItem={selectedProduct}
-                    loading={productsLoading || variantsLoading}
-                    emptyMessage={productSearchTerm.length > 0 ? "No products found" : "Start typing to search products..."}
+                    loading={lineProductSearchLoading}
+                    emptyMessage={lineProductEmptyMessage}
                     value={productSearchTerm}
                   />
                 </div>
@@ -1534,6 +1545,7 @@ export const PurchaseOrders = ({ tabId }) => {
                     step="1"
                     value={customCost}
                     onChange={(e) => setCustomCost(e.target.value)}
+                    onFocus={(e) => e.target.select()}
                     onKeyDown={handleInputKeyDown}
                     className="text-center h-10"
                     placeholder="0 (Enter to add & focus search)"
@@ -1621,6 +1633,14 @@ export const PurchaseOrders = ({ tabId }) => {
                 </div>
               </div>
 
+              <div
+                ref={poCartScrollRef}
+                className={
+                  poCartNeedsInnerScroll
+                    ? 'max-h-[min(70vh,860px)] overflow-y-auto -mx-1 px-1 [scrollbar-gutter:stable]'
+                    : 'overflow-visible -mx-1 px-1'
+                }
+              >
               {formData.items.map((item, index) => {
                 const product = item.productData || item.product; // Use stored product/variant data or fallback to product
                 const displayName = product?.isVariant
@@ -1628,9 +1648,16 @@ export const PurchaseOrders = ({ tabId }) => {
                   : (product?.name || 'Unknown Product');
                 const totalPrice = item.costPerUnit * item.quantity;
                 const isLowStock = product?.inventory?.currentStock <= (product?.inventory?.reorderPoint || 0);
+                const serialHighlight = highlightedPoLineIndex === index;
 
                 return (
-                  <div key={index}>
+                  <div
+                    key={index}
+                    ref={(node) => {
+                      if (node) poCartLineElRefs.current.set(index, node);
+                      else poCartLineElRefs.current.delete(index);
+                    }}
+                  >
                     {/* Mobile Card View */}
                     <div className="md:hidden mb-4 p-3 border border-gray-200 rounded-lg bg-white shadow-sm">
                       <div className="flex items-start justify-between mb-3">
@@ -1649,7 +1676,15 @@ export const PurchaseOrders = ({ tabId }) => {
                           )}
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 mb-1">
-                              <span className="text-xs font-semibold text-gray-500 bg-gray-100 px-2 py-0.5 rounded">#{index + 1}</span>
+                              <span
+                                className={`text-xs font-semibold px-2 py-0.5 rounded transition-colors duration-300 ${
+                                  serialHighlight
+                                    ? 'bg-green-100 text-green-800 border border-green-400 ring-2 ring-green-300/80'
+                                    : 'text-gray-500 bg-gray-100'
+                                }`}
+                              >
+                                #{index + 1}
+                              </span>
                               <span className="font-medium text-sm truncate">
                                 {product?.isVariant
                                 ? safeRender(product?.displayName || product?.variantName || product?.name || 'Unknown Variant')
@@ -1746,6 +1781,7 @@ export const PurchaseOrders = ({ tabId }) => {
                                   )
                                 }));
                               }}
+                              onFocus={(e) => e.target.select()}
                               className="text-center h-8 w-full"
                               min="1"
                             />
@@ -1766,6 +1802,7 @@ export const PurchaseOrders = ({ tabId }) => {
                                 )
                               }));
                             }}
+                            onFocus={(e) => e.target.select()}
                             className="text-center h-8 w-full"
                             min="0"
                           />
@@ -1778,7 +1815,13 @@ export const PurchaseOrders = ({ tabId }) => {
                       <div className="grid grid-cols-12 gap-4 items-center">
                         {/* Serial Number - 1 column (new field) */}
                         <div className="col-span-1 flex justify-center">
-                          <span className="text-sm font-medium text-gray-700 bg-gray-50 px-0.5 py-1 rounded border border-gray-200 block text-center h-8 w-1/2 min-w-[56px] flex items-center justify-center">
+                          <span
+                            className={`text-sm font-medium px-0.5 py-1 rounded border block text-center h-8 w-1/2 min-w-[56px] flex items-center justify-center transition-colors duration-300 ${
+                              serialHighlight
+                                ? 'bg-green-100 text-green-800 border-green-400 ring-2 ring-green-300/80'
+                                : 'text-gray-700 bg-gray-50 border-gray-200'
+                            }`}
+                          >
                             {index + 1}
                           </span>
                         </div>
@@ -1868,6 +1911,7 @@ export const PurchaseOrders = ({ tabId }) => {
                                 )
                               }));
                             }}
+                            onFocus={(e) => e.target.select()}
                             className="text-center h-8"
                             min="0"
                           />
@@ -1897,6 +1941,7 @@ export const PurchaseOrders = ({ tabId }) => {
                   </div>
                 );
               })}
+              </div>
             </div>
           )}
 
@@ -2111,7 +2156,9 @@ export const PurchaseOrders = ({ tabId }) => {
                       poNumber: `PO-${Date.now()}`,
                       supplier: selectedSupplier,
                       items: formData.items.map(item => {
-                        const product = item.productData || productsData?.find(p => p._id === item.product);
+                        const product =
+                          item.productData ||
+                          (typeof item.product === 'object' ? item.product : null);
                         return {
                           product: product,
                           quantity: item.quantity,
@@ -2476,6 +2523,7 @@ export const PurchaseOrders = ({ tabId }) => {
                           autoComplete="off"
                           value={editProductQuantity}
                           onChange={(e) => setEditProductQuantity(parseInt(e.target.value) || 1)}
+                          onFocus={(e) => e.target.select()}
                           className="modal-quantity-input w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                           placeholder="1"
                         />
@@ -2492,6 +2540,7 @@ export const PurchaseOrders = ({ tabId }) => {
                           autoComplete="off"
                           value={editProductCost}
                           onChange={(e) => setEditProductCost(parseFloat(e.target.value) || 0)}
+                          onFocus={(e) => e.target.select()}
                           className="modal-cost-input w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                           placeholder="0.00"
                         />
@@ -2586,6 +2635,7 @@ export const PurchaseOrders = ({ tabId }) => {
                                   newItems[index].totalCost = newItems[index].quantity * newCost;
                                   setFormData(prev => ({ ...prev, items: newItems }));
                                 }}
+                                onFocus={(e) => e.target.select()}
                                 className="w-20 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
                               />
                             </div>
@@ -2824,6 +2874,8 @@ export const PurchaseOrders = ({ tabId }) => {
               <span className="text-sm text-gray-500">
                 {paginationInfo.total ?? paginationInfo.totalItems ?? purchaseOrders.length ?? 0} records
               </span>
+              <ExcelExportButton getData={getExportData} label="Export" />
+              <PdfExportButton getData={getExportData} label="PDF" />
               <button
                 onClick={() => refetch()}
                 className="p-2 text-gray-400 hover:text-gray-600"
@@ -2849,7 +2901,11 @@ export const PurchaseOrders = ({ tabId }) => {
               <p>No purchase orders found for the selected criteria.</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+            <div
+              ref={poTableScrollRef}
+              className={`overflow-x-auto ${virtualizePoRows ? 'max-h-[min(70vh,560px)] overflow-y-auto' : ''}`}
+            >
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
@@ -2874,8 +2930,23 @@ export const PurchaseOrders = ({ tabId }) => {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {purchaseOrders.map((order, index) => (
-                    <tr key={order.id || order._id} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                  {(() => {
+                    const vItems = poRowVirtualizer.getVirtualItems();
+                    const totalH = poRowVirtualizer.getTotalSize();
+                    const padTop = vItems.length ? vItems[0].start : 0;
+                    const padBottom = vItems.length ? totalH - vItems[vItems.length - 1].end : 0;
+                    return (
+                      <>
+                        {padTop > 0 ? (
+                          <tr aria-hidden className="pointer-events-none">
+                            <td colSpan={6} className="p-0 border-0" style={{ height: padTop }} />
+                          </tr>
+                        ) : null}
+                        {vItems.map((vr) => {
+                          const order = purchaseOrders[vr.index];
+                          const index = vr.index;
+                          return (
+                    <tr key={vr.key} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'} style={{ height: vr.size }}>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {formatDate(order.purchase_date || order.order_date || order.created_at || order.createdAt)}
                       </td>
@@ -2946,10 +3017,27 @@ export const PurchaseOrders = ({ tabId }) => {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                          );
+                        })}
+                        {padBottom > 0 ? (
+                          <tr aria-hidden className="pointer-events-none">
+                            <td colSpan={6} className="p-0 border-0" style={{ height: padBottom }} />
+                          </tr>
+                        ) : null}
+                      </>
+                    );
+                  })()}
                 </tbody>
               </table>
             </div>
+            <PaginationControls
+              page={Number(paginationInfo.current ?? pagination.page) || 1}
+              totalPages={Math.max(1, Number(paginationInfo.pages) || 1)}
+              onPageChange={(p) => setPagination((prev) => ({ ...prev, page: p }))}
+              totalItems={paginationInfo.total}
+              limit={pagination.limit}
+            />
+            </>
           )}
         </div>
       </div>

@@ -516,6 +516,110 @@ class AccountingService {
   }
 
   /**
+   * Display opening cash: COA column (legacy) plus non-reversed ledger lines for cash_opening_balance.
+   * After {@link postCashOpeningBalance}, COA opening for 1000 is zero and the amount lives on the ledger.
+   */
+  static async getCashOpeningBalanceForDisplay() {
+    const coaRes = await query(
+      `SELECT COALESCE(opening_balance, 0) AS ob
+       FROM chart_of_accounts WHERE account_code = '1000' AND deleted_at IS NULL LIMIT 1`
+    );
+    const coaOpening = parseFloat(coaRes.rows[0]?.ob || 0);
+    const legRes = await query(
+      `SELECT COALESCE(SUM(debit_amount - credit_amount), 0) AS net
+       FROM account_ledger
+       WHERE account_code = '1000'
+         AND reference_type = 'cash_opening_balance'
+         AND status = 'completed'
+         AND reversed_at IS NULL`
+    );
+    const ledgerOpening = parseFloat(legRes.rows[0]?.net || 0);
+    return coaOpening + ledgerOpening;
+  }
+
+  /**
+   * Post or update cash-on-hand opening balance in account ledger (single GL cash account 1000).
+   * Reverses prior cash_opening_balance rows for the cash COA row, clears COA opening_balance on 1000
+   * so totals stay consistent with {@link getAccountBalance} (opening is not double-counted).
+   *
+   * Double-entry policy (same pattern as bank, account 1001):
+   * - Positive opening: Dr Cash (1000), Cr Retained Earnings (3100)
+   * - Negative opening: Dr Retained Earnings (3100), Cr Cash (1000)
+   *
+   * @param {number} amount - Opening cash amount
+   * @param {Object} options - { createdBy, transactionDate, client }
+   */
+  static async postCashOpeningBalance(amount, options = {}) {
+    const { createdBy, transactionDate, client } = options;
+    const amt = parseFloat(amount) || 0;
+
+    const runInTransaction = async (clientToUse) => {
+      const cashCoa = await clientToUse.query(
+        `SELECT id FROM chart_of_accounts WHERE account_code = '1000' AND deleted_at IS NULL LIMIT 1`
+      );
+      if (!cashCoa.rows[0]) {
+        throw new Error('Cash account (1000) not found in chart of accounts');
+      }
+      const cashAccountId = cashCoa.rows[0].id;
+
+      await this.reverseLedgerEntriesByReference('cash_opening_balance', cashAccountId, clientToUse);
+
+      await clientToUse.query(
+        `UPDATE chart_of_accounts SET opening_balance = 0, updated_at = CURRENT_TIMESTAMP
+         WHERE account_code = '1000' AND deleted_at IS NULL`
+      );
+
+      if (Math.abs(amt) < 0.01) {
+        await this.updateAccountBalance(clientToUse, '1000');
+        await this.updateAccountBalance(clientToUse, '3100');
+        return;
+      }
+
+      const absAmt = Math.abs(amt);
+      const refNum = `CASH-OB-${String(cashAccountId).replace(/-/g, '').slice(0, 10)}`;
+      const txnDate = transactionDate || new Date();
+
+      if (amt > 0) {
+        await this.createTransaction(
+          { accountCode: '1000', debitAmount: absAmt, description: 'Cash opening balance' },
+          { accountCode: '3100', creditAmount: absAmt, description: 'Cash opening balance offset (equity)' },
+          {
+            referenceType: 'cash_opening_balance',
+            referenceId: cashAccountId,
+            referenceNumber: refNum,
+            transactionDate: txnDate,
+            currency: 'PKR',
+            createdBy
+          },
+          clientToUse
+        );
+      } else {
+        await this.createTransaction(
+          { accountCode: '3100', debitAmount: absAmt, description: 'Cash opening balance offset (equity)' },
+          { accountCode: '1000', creditAmount: absAmt, description: 'Cash opening balance' },
+          {
+            referenceType: 'cash_opening_balance',
+            referenceId: cashAccountId,
+            referenceNumber: refNum,
+            transactionDate: txnDate,
+            currency: 'PKR',
+            createdBy
+          },
+          clientToUse
+        );
+      }
+    };
+
+    if (client) {
+      await runInTransaction(client);
+    } else {
+      await transaction(async (clientToUse) => {
+        await runInTransaction(clientToUse);
+      });
+    }
+  }
+
+  /**
    * Post or update customer opening balance in account ledger.
    * Reverses previous customer opening entries for the customer and posts current amount.
    *
@@ -1381,7 +1485,8 @@ class AccountingService {
    * Record sale transaction (posts to account_ledger: AR, Revenue, and COGS/Inventory when applicable).
    * Sale object may use snake_case (from DB) or camelCase; items may have unitCost or cost_price.
    */
-  static async recordSale(sale) {
+  static async recordSale(sale, options = {}) {
+    const { client = null } = options;
     const customerId = sale.customer_id || sale.customerId;
     const total = Number(sale.total);
     if (total !== total || total < 0) {
@@ -1402,7 +1507,7 @@ class AccountingService {
     const txnDate = sale.sale_date || sale.saleDate || sale.created_at || sale.createdAt || new Date();
     const createdBy = sale.created_by || sale.createdBy;
 
-    return await transaction(async (client) => {
+    const runInTransaction = async (clientToUse) => {
       // 1. Debit: Accounts Receivable, Credit: Sales Revenue (only if total > 0)
       if (total > 0) {
         await this.createTransaction(
@@ -1426,7 +1531,8 @@ class AccountingService {
             currency: 'PKR',
             transactionDate: txnDate,
             createdBy: createdBy
-          }
+          },
+          clientToUse
         );
       }
 
@@ -1452,10 +1558,16 @@ class AccountingService {
             currency: 'PKR',
             transactionDate: txnDate,
             createdBy: createdBy
-          }
+          },
+          clientToUse
         );
       }
       return { ok: true };
+    };
+
+    if (client) return await runInTransaction(client);
+    return await transaction(async (newClient) => {
+      return await runInTransaction(newClient);
     });
   }
 
@@ -1466,7 +1578,8 @@ class AccountingService {
    * - Delta < 0: Dr AR, Cr Cash/Bank (reversal)
    * @param {Object} params - { saleId, orderNumber, customerId, oldAmountPaid, newAmountPaid, paymentMethod, createdBy }
    */
-  static async recordSalePaymentAdjustment(params) {
+  static async recordSalePaymentAdjustment(params, options = {}) {
+    const { client = null } = options;
     const { saleId, orderNumber, customerId, oldAmountPaid, newAmountPaid, paymentMethod = 'cash', createdBy } = params;
     const oldAmt = parseFloat(oldAmountPaid) || 0;
     const newAmt = parseFloat(newAmountPaid) || 0;
@@ -1482,7 +1595,8 @@ class AccountingService {
       return await this.createTransaction(
         { accountCode: debitAccount, debitAmount: delta, creditAmount: 0, description: `Sale payment (edit): ${refNum}` },
         { accountCode: creditAccount, debitAmount: 0, creditAmount: delta, description: `Payment for sale: ${refNum}` },
-        { referenceType: 'sale_payment', referenceId: saleId, referenceNumber: refNum, customerId: customerId || null, currency: 'PKR', createdBy }
+        { referenceType: 'sale_payment', referenceId: saleId, referenceNumber: refNum, customerId: customerId || null, currency: 'PKR', createdBy },
+        client
       );
     } else {
       // Reversal: Dr AR, Cr Cash/Bank
@@ -1490,7 +1604,8 @@ class AccountingService {
       return await this.createTransaction(
         { accountCode: creditAccount, debitAmount: absDelta, creditAmount: 0, description: `Sale payment reversal (edit): ${refNum}` },
         { accountCode: debitAccount, debitAmount: 0, creditAmount: absDelta, description: `Reversal for sale: ${refNum}` },
-        { referenceType: 'sale_payment', referenceId: saleId, referenceNumber: refNum, customerId: customerId || null, currency: 'PKR', createdBy }
+        { referenceType: 'sale_payment', referenceId: saleId, referenceNumber: refNum, customerId: customerId || null, currency: 'PKR', createdBy },
+        client
       );
     }
   }

@@ -19,6 +19,7 @@ export const customersApi = api.injectEndpoints({
           params: filteredParams,
         };
       },
+      keepUnusedDataFor: 60,
       providesTags: (result) => {
         const list =
           result?.data?.customers ||
@@ -140,10 +141,10 @@ export const customersApi = api.injectEndpoints({
       providesTags: [{ type: 'Customers', id: 'BY_CITIES' }],
     }),
     bulkCreateCustomers: builder.mutation({
-      query: (customers) => ({
+      query: ({ customers, autoCreateCities = true }) => ({
         url: 'customers/bulk-create',
         method: 'post',
-        data: { customers },
+        data: { customers, autoCreateCities },
       }),
       invalidatesTags: [
         { type: 'Customers', id: 'LIST' },

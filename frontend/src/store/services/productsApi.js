@@ -19,6 +19,8 @@ export const productsApi = api.injectEndpoints({
           params: filteredParams,
         };
       },
+      // Cache list queries to reduce refetch churn when navigating POS (~90s).
+      keepUnusedDataFor: 90,
       providesTags: (result) => {
         const list =
           result?.data?.products ||
@@ -148,10 +150,10 @@ export const productsApi = api.injectEndpoints({
       ],
     }),
     bulkCreateProducts: builder.mutation({
-      query: (products) => ({
+      query: ({ products, autoCreateCategories = true }) => ({
         url: 'products/bulk-create',
         method: 'post',
-        data: { products },
+        data: { products, autoCreateCategories },
       }),
       invalidatesTags: [
         { type: 'Products', id: 'LIST' },
@@ -165,6 +167,7 @@ export const productsApi = api.injectEndpoints({
 
 export const {
   useGetProductsQuery,
+  useLazyGetProductsQuery,
   useGetProductQuery,
   useCreateProductMutation,
   useUpdateProductMutation,

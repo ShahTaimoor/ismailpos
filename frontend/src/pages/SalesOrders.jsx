@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
+import { useDispatch } from 'react-redux';
 import { useQuery } from 'react-query';
 import {
   Calendar,
@@ -50,12 +51,14 @@ import {
   OrderSummaryContent,
   OrderCheckoutActions,
 } from '../components/order/OrderCheckoutLayout';
-import { useGetCustomersQuery, useGetCustomerQuery } from '../store/services/customersApi';
-import { useGetProductsQuery, useLazyGetLastPurchasePriceQuery } from '../store/services/productsApi';
-import { useGetVariantsQuery } from '../store/services/productVariantsApi';
+import { useGetCustomerQuery } from '../store/services/customersApi';
+import { useDebouncedCustomerSearch } from '@/hooks/useDebouncedCustomerSearch';
+import { productsApi, useLazyGetLastPurchasePriceQuery } from '../store/services/productsApi';
+import { productVariantsApi } from '../store/services/productVariantsApi';
 import { useGetSalesQuery, useLazyGetLastPricesQuery } from '../store/services/salesApi';
 import {
   useGetSalesOrdersQuery,
+  useLazyGetSalesOrdersQuery,
   useLazyGetStockStatusQuery,
   useCreateSalesOrderMutation,
   useUpdateSalesOrderMutation,
@@ -72,7 +75,6 @@ import {
   OrderConfirmSelectedActions,
   getItemConfirmationStatus,
 } from '../components/OrderItemConfirmationCell';
-import { useFuzzySearch } from '../hooks/useFuzzySearch';
 import { SearchableDropdown } from '../components/SearchableDropdown';
 import { DualUnitQuantityInput } from '../components/DualUnitQuantityInput';
 import { ProductSearch } from '../components/sales/ProductSearch';
@@ -85,6 +87,7 @@ import BaseModal from '../components/BaseModal';
 import { useCompanyInfo } from '../hooks/useCompanyInfo';
 import NotesPanel from '../components/NotesPanel';
 import DateFilter from '../components/DateFilter';
+import PaginationControls from '../components/PaginationControls';
 import { getCurrentDatePakistan, getDateDaysAgo } from '../utils/dateUtils';
 import ExcelExportButton from '../components/ExcelExportButton';
 import PdfExportButton from '../components/PdfExportButton';
@@ -147,7 +150,7 @@ const SalesOrders = ({ tabId }) => {
 
   const [pagination, setPagination] = useState({
     page: 1,
-    limit: 999999 // Get all sales orders without pagination
+    limit: 50
   });
 
   const [sortConfig, setSortConfig] = useState({
@@ -249,6 +252,28 @@ const SalesOrders = ({ tabId }) => {
   const [lastPurchasePrice, setLastPurchasePrice] = useState(null); // Last purchase price for selected product
   const [lastPurchasePrices, setLastPurchasePrices] = useState({}); // Store last purchase prices for products in cart
   const [previewImageProduct, setPreviewImageProduct] = useState(null);
+
+  const soCartScrollRef = useRef(null);
+  const soCartLineElRefs = useRef(new Map());
+  const [highlightedSoLineIndex, setHighlightedSoLineIndex] = useState(null);
+  const soCartNeedsInnerScroll = formData.items.length > 10;
+
+  useLayoutEffect(() => {
+    if (highlightedSoLineIndex === null) return;
+    const idx = highlightedSoLineIndex;
+    soCartScrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (soCartNeedsInnerScroll) {
+      soCartLineElRefs.current.get(idx)?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    } else {
+      requestAnimationFrame(() => {
+        soCartLineElRefs.current.get(idx)?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      });
+    }
+  }, [highlightedSoLineIndex, soCartNeedsInnerScroll, formData.items.length]);
+
+  useEffect(() => {
+    if (formData.items.length === 0) setHighlightedSoLineIndex(null);
+  }, [formData.items.length]);
 
 
 
@@ -365,20 +390,16 @@ const SalesOrders = ({ tabId }) => {
     refetch,
   } = useGetSalesOrdersQuery({ ...filters, ...pagination, sortConfig }, { refetchOnMountOrArgChange: true });
 
+  const [fetchSalesOrdersForExport] = useLazyGetSalesOrdersQuery();
+
   const [getLastPurchasePrice] = useLazyGetLastPurchasePriceQuery();
   const [getLastPrices] = useLazyGetLastPricesQuery();
 
-  // Fetch customers for dropdown
-  const { data: customersData, isLoading: customersLoading } = useGetCustomersQuery(
-    { limit: 999999 },
-    {
-      staleTime: 0, // Always consider data stale to get fresh credit information
-      refetchOnMountOrArgChange: true // Refetch when component mounts or params change
-    }
-  );
-  const customers = React.useMemo(() => {
-    return customersData?.data?.customers || customersData?.customers || customersData?.data || customersData || [];
-  }, [customersData]);
+  const {
+    customers,
+    isLoading: customersLoading,
+    isFetching: customersFetching,
+  } = useDebouncedCustomerSearch(customerSearchTerm, { selectedCustomer });
 
   const selectedCustomerId = selectedCustomer?.id ?? selectedCustomer?._id ?? null;
   const { data: selectedCustomerDetail } = useGetCustomerQuery(selectedCustomerId, {
@@ -393,91 +414,16 @@ const SalesOrders = ({ tabId }) => {
   const displayBalance = selectedCustomer?.currentBalance ?? customerWithBalance?.currentBalance ?? 0;
   const displayCreditLimit = selectedCustomer?.creditLimit ?? selectedCustomer?.credit_limit ?? customerWithBalance?.creditLimit ?? customerWithBalance?.credit_limit;
 
-  // Fetch all active products for client-side fuzzy search
-  const { data: allProductsData, isLoading: productsLoading, refetch: refetchProducts } = useGetProductsQuery(
-    { limit: 999999, status: 'active' },
-    {
-      keepPreviousData: true,
-      staleTime: 0, // Always consider data stale to get fresh stock levels
-      refetchOnMountOrArgChange: true, // Refetch when component mounts or params change
-    }
-  );
-
-  // Fetch all variants for search
-  const { data: variantsData, isLoading: variantsLoading } = useGetVariantsQuery(
-    { status: 'active' },
-    {
-      keepPreviousData: true,
-      staleTime: 0,
-      refetchOnMountOrArgChange: true,
-    }
-  );
-
-  // Extract products array from RTK Query response (same pattern as Sales page)
-  const allProducts = React.useMemo(() => {
-    if (!allProductsData) return [];
-    if (Array.isArray(allProductsData)) return allProductsData;
-    if (allProductsData?.data?.products) return allProductsData.data.products;
-    if (allProductsData?.products) return allProductsData.products;
-    if (allProductsData?.data?.data?.products) return allProductsData.data.data.products;
-    return [];
-  }, [allProductsData]);
-
-  // Extract variants array from RTK Query response
-  const allVariants = React.useMemo(() => {
-    if (!variantsData) return [];
-    if (Array.isArray(variantsData)) return variantsData;
-    if (variantsData?.data?.variants) return variantsData.data.variants;
-    if (variantsData?.variants) return variantsData.variants;
-    return [];
-  }, [variantsData]);
-
-  // Combine products and variants for search, marking variants with isVariant flag
-  const allItems = React.useMemo(() => {
-    const productsList = allProducts.map(p => ({ ...p, isVariant: false }));
-    const variantsList = allVariants
-      .filter(v => v.status === 'active')
-      .map(v => ({
-        ...v,
-        isVariant: true,
-        // Use variant's display name for search, but keep variant data
-        name: v.displayName || v.variantName || `${v.baseProduct?.name || ''} - ${v.variantValue || ''}`,
-        // Use variant pricing and inventory
-        pricing: v.pricing || { retail: 0, wholesale: 0, cost: 0 },
-        inventory: v.inventory || { currentStock: 0, reorderPoint: 0 },
-        // Keep reference to base product
-        baseProductId: v.baseProduct?._id || v.baseProduct,
-        baseProductName: v.baseProduct?.name || '',
-        variantType: v.variantType,
-        variantValue: v.variantValue,
-        variantName: v.variantName,
-      }));
-    return [...productsList, ...variantsList];
-  }, [allProducts, allVariants]);
-
-  const productsData = useFuzzySearch(
-    allItems,
-    productSearchTerm,
-    ['name', 'description', 'brand', 'displayName', 'variantValue', 'variantName'],
-    {
-      threshold: 0.4,
-      minScore: 0.3,
-      limit: null // Show unlimited products
-    }
-  );
-
-  // Apply fuzzy search for modal product search
-  const modalProductsData = useFuzzySearch(
-    allItems,
-    modalProductSearchTerm,
-    ['name', 'description', 'brand', 'displayName', 'variantValue', 'variantName'],
-    {
-      threshold: 0.4,
-      minScore: 0.3,
-      limit: null // Show unlimited products
-    }
-  );
-  const modalProductsLoading = productsLoading || variantsLoading;
+  const dispatch = useDispatch();
+  const refreshProductCatalogCache = useCallback(() => {
+    dispatch(
+      productsApi.util.invalidateTags([
+        { type: 'Products', id: 'LIST' },
+        { type: 'Products', id: 'SEARCH' },
+      ])
+    );
+    dispatch(productVariantsApi.util.invalidateTags([{ type: 'Products', id: 'VARIANTS_LIST' }]));
+  }, [dispatch]);
 
   const [getStockStatus] = useLazyGetStockStatusQuery();
 
@@ -526,6 +472,7 @@ const SalesOrders = ({ tabId }) => {
     // Reset cost price state
     setLastPurchasePrice(null);
     setLastPurchasePrices({});
+    setHighlightedSoLineIndex(null);
 
     // Reset loading states
     setIsAddingToCart(false);
@@ -898,7 +845,7 @@ const SalesOrders = ({ tabId }) => {
       // Focus back to product search input
       setTimeout(() => {
         if (productSearchRef.current) {
-          productSearchRef.current.focus();
+          productSearchRef.current.focus({ preventScroll: true });
         }
       }, 100);
 
@@ -929,6 +876,8 @@ const SalesOrders = ({ tabId }) => {
     const ppb = getPiecesPerBox(product);
     const derivedDual = ppb ? piecesToBoxesAndPieces(qty, ppb) : {};
 
+    let highlightLineIndex = null;
+
     setFormData((prev) => {
       const productId = product._id.toString();
       const getItemProductId = (item) => (
@@ -937,6 +886,7 @@ const SalesOrders = ({ tabId }) => {
       const existingIndex = prev.items.findIndex((item) => getItemProductId(item) === productId);
 
       if (existingIndex >= 0) {
+        highlightLineIndex = existingIndex;
         const existingItem = prev.items[existingIndex];
         const newQuantity = (Number(existingItem.quantity) || 0) + qty;
         const newSubtotal = newQuantity * unitPrice;
@@ -966,6 +916,8 @@ const SalesOrders = ({ tabId }) => {
         };
       }
 
+      highlightLineIndex = prev.items.length;
+
       const newItem = {
         product: product._id,
         productData: product,
@@ -988,6 +940,10 @@ const SalesOrders = ({ tabId }) => {
         items: [...prev.items, newItem]
       };
     });
+
+    if (highlightLineIndex !== null && highlightLineIndex >= 0) {
+      setHighlightedSoLineIndex(highlightLineIndex);
+    }
   }, [formData.isTaxExempt]);
 
   const handleAddModalItem = async () => {
@@ -1458,9 +1414,7 @@ const SalesOrders = ({ tabId }) => {
           showSuccessToast('Sales order confirmed and invoice generated successfully');
         }
         refetch();
-        if (refetchProducts && typeof refetchProducts === 'function') {
-          refetchProducts();
-        }
+        refreshProductCatalogCache();
       })
       .catch((error) => {
         setShowOutOfStockModal(false);
@@ -1503,9 +1457,7 @@ const SalesOrders = ({ tabId }) => {
           showSuccessToast('Sales order cancelled successfully');
           refetch(); // Refetch sales orders list
           // Immediately refetch products to update stock levels (cancellation may restore stock)
-          if (refetchProducts && typeof refetchProducts === 'function') {
-            refetchProducts();
-          }
+          refreshProductCatalogCache();
         })
         .catch((error) => {
           showErrorToast(handleApiError(error));
@@ -1530,9 +1482,7 @@ const SalesOrders = ({ tabId }) => {
         }
         setSelectedItemIndices([]);
         refetch();
-        if (refetchProducts && typeof refetchProducts === 'function') {
-          refetchProducts();
-        }
+        refreshProductCatalogCache();
       })
       .catch((error) => {
         showErrorToast(handleApiError(error));
@@ -1841,46 +1791,57 @@ const SalesOrders = ({ tabId }) => {
   const salesOrders = salesOrdersData?.data?.salesOrders ?? salesOrdersData?.salesOrders ?? [];
   const paginationInfo = salesOrdersData?.data?.pagination ?? salesOrdersData?.pagination ?? {};
 
-  const getExportData = () => {
-    return {
-      title: 'Sales Orders Report',
-      filename: `Sales_Orders_${filters.fromDate}_to_${filters.toDate}.xlsx`,
-      company: {
-        name: companySettings?.companyName || 'ZARYAB IMPEX',
-        address: companySettings?.address || companySettings?.billingAddress || '',
-        contact: `${companySettings?.contactNumber || ''} ${companySettings?.email ? '| ' + companySettings.email : ''}`.trim()
-      },
-      columns: [
-        { header: 'S.No', key: 'sno', width: 8, type: 'number' },
-        { header: 'Image', key: 'imageUrl', width: 12, type: 'image' },
-        { header: 'Order #', key: 'orderNumber', width: 25 },
-        { header: 'Customer', key: 'customerName', width: 35 },
-        { header: 'Date', key: 'date', width: 15 },
-        { header: 'Type', key: 'orderType', width: 15 },
-        { header: 'Status', key: 'status', width: 15 },
-        { header: 'Total Amount', key: 'totalAmount', width: 15, type: 'currency' }
-      ],
-      data: salesOrders.map((order, i) => ({
-        sno: i + 1,
-        imageUrl: order.items?.[0]?.product?.imageUrl ?? order.items?.[0]?.productData?.imageUrl ?? null,
-        orderNumber: order?.soNumber ?? order?.so_number ?? order?.orderNumber ?? order?.invoiceNumber ?? '—',
-        customerName: order?.customer?.businessName ?? order?.customer?.business_name ?? order?.customer?.displayName ?? order?.customer?.name ?? 'Walk-in',
-        date: formatDate(order?.orderDate ?? order?.order_date ?? order?.createdAt ?? order?.created_at),
-        orderType: (order?.orderType || '—').toUpperCase(),
-        status: (order?.status || '—').toUpperCase(),
-        totalAmount: Number(order?.pricing?.totalAmount ?? order?.pricing?.total ?? order?.totalAmount ?? order?.total ?? 0)
-      })),
-      summary: {
-        rows: [
-          {
-            label: 'GRAND TOTAL:',
-            orderNumber: `${salesOrders.length} Orders`,
-            totalAmount: salesOrders.reduce((sum, o) => sum + Number(o?.pricing?.totalAmount ?? o?.pricing?.total ?? o?.totalAmount ?? o?.total ?? 0), 0)
-          }
-        ]
-      }
-    };
-  };
+  const getExportData = useCallback(async () => {
+    try {
+      const res = await fetchSalesOrdersForExport({
+        ...filters,
+        sortConfig,
+        all: true,
+      }).unwrap();
+      const allRows = res?.salesOrders ?? res?.data?.salesOrders ?? [];
+      return {
+        title: 'Sales Orders Report',
+        filename: `Sales_Orders_${filters.fromDate}_to_${filters.toDate}.xlsx`,
+        company: {
+          name: companySettings?.companyName || 'ZARYAB IMPEX',
+          address: companySettings?.address || companySettings?.billingAddress || '',
+          contact: `${companySettings?.contactNumber || ''} ${companySettings?.email ? '| ' + companySettings.email : ''}`.trim()
+        },
+        columns: [
+          { header: 'S.No', key: 'sno', width: 8, type: 'number' },
+          { header: 'Image', key: 'imageUrl', width: 12, type: 'image' },
+          { header: 'Order #', key: 'orderNumber', width: 25 },
+          { header: 'Customer', key: 'customerName', width: 35 },
+          { header: 'Date', key: 'date', width: 15 },
+          { header: 'Type', key: 'orderType', width: 15 },
+          { header: 'Status', key: 'status', width: 15 },
+          { header: 'Total Amount', key: 'totalAmount', width: 15, type: 'currency' }
+        ],
+        data: allRows.map((order, i) => ({
+          sno: i + 1,
+          imageUrl: order.items?.[0]?.product?.imageUrl ?? order.items?.[0]?.productData?.imageUrl ?? null,
+          orderNumber: order?.soNumber ?? order?.so_number ?? order?.orderNumber ?? order?.invoiceNumber ?? '—',
+          customerName: order?.customer?.businessName ?? order?.customer?.business_name ?? order?.customer?.displayName ?? order?.customer?.name ?? 'Walk-in',
+          date: formatDate(order?.orderDate ?? order?.order_date ?? order?.createdAt ?? order?.created_at),
+          orderType: (order?.orderType || '—').toUpperCase(),
+          status: (order?.status || '—').toUpperCase(),
+          totalAmount: Number(order?.pricing?.totalAmount ?? order?.pricing?.total ?? order?.totalAmount ?? order?.total ?? 0)
+        })),
+        summary: {
+          rows: [
+            {
+              label: 'GRAND TOTAL:',
+              orderNumber: `${allRows.length} Orders`,
+              totalAmount: allRows.reduce((sum, o) => sum + Number(o?.pricing?.totalAmount ?? o?.pricing?.total ?? o?.totalAmount ?? o?.total ?? 0), 0)
+            }
+          ]
+        }
+      };
+    } catch (err) {
+      showErrorToast(handleApiError(err).message || 'Could not load sales orders for export');
+      return null;
+    }
+  }, [fetchSalesOrdersForExport, filters, sortConfig, companySettings]);
 
   const {
     subtotal,
@@ -1965,7 +1926,7 @@ const SalesOrders = ({ tabId }) => {
             onSearch={handleCustomerSearch}
             displayKey={customerDisplayKey}
             selectedItem={selectedCustomer}
-            loading={customersLoading}
+            loading={customersLoading || customersFetching}
             emptyMessage={customerSearchTerm.length > 0 ? "No customers found" : "Start typing to search customers..."}
             value={customerSearchTerm}
             rightContentKey="city"
@@ -2224,13 +2185,29 @@ const SalesOrders = ({ tabId }) => {
                   { key: 'action', label: 'Action', wrapperClassName: 'min-w-0 flex justify-end', labelClassName: 'text-xs font-semibold text-gray-600 uppercase text-right' },
                 ]}
               />
+              <div
+                ref={soCartScrollRef}
+                className={
+                  soCartNeedsInnerScroll
+                    ? 'max-h-[min(70vh,860px)] overflow-y-auto -mx-1 px-1 [scrollbar-gutter:stable]'
+                    : 'overflow-visible -mx-1 px-1'
+                }
+              >
               {formData.items.map((item, index) => {
                 const product = item.productData || item.product; // Use stored product data or fallback to product
                 const totalPrice = item.unitPrice * item.quantity;
                 const isLowStock = product?.inventory?.currentStock <= (product?.inventory?.reorderPoint || 0);
+                const serialHighlight = highlightedSoLineIndex === index;
 
                 return (
-                  <div key={index} className={`py-1 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                  <div
+                    key={index}
+                    ref={(node) => {
+                      if (node) soCartLineElRefs.current.set(index, node);
+                      else soCartLineElRefs.current.delete(index);
+                    }}
+                    className={`py-1 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}
+                  >
                     {/* Desktop Grid Layout */}
                     <div
                       className={`hidden md:grid gap-x-1 items-center ${dualUnitShowBoxInputEnabled
@@ -2248,7 +2225,13 @@ const SalesOrders = ({ tabId }) => {
                     >
                       {/* Serial Number - 1 column */}
                       <div className="min-w-0 flex justify-start">
-                        <span className="text-sm font-medium text-gray-700 bg-gray-50 px-0.5 py-1 rounded border border-gray-200 block text-center h-8 flex items-center justify-center">
+                        <span
+                          className={`text-sm font-medium px-0.5 py-1 rounded border block text-center h-8 flex items-center justify-center transition-colors duration-300 ${
+                            serialHighlight
+                              ? 'bg-green-100 text-green-800 border-green-400 ring-2 ring-green-300/80'
+                              : 'text-gray-700 bg-gray-50 border-gray-200'
+                          }`}
+                        >
                           {index + 1}
                         </span>
                       </div>
@@ -2340,6 +2323,7 @@ const SalesOrders = ({ tabId }) => {
                                       ))
                                     }));
                                   }}
+                                  onFocus={(e) => e.target.select()}
                                   className={`text-sm font-semibold w-full min-w-0 rounded border px-2 py-1 text-center h-8 focus:outline-none focus:ring-2 focus:ring-primary-500/35 ${(product?.inventory?.currentStock || 0) === 0
                                     ? 'text-red-700 bg-red-50 border-red-200'
                                     : (product?.inventory?.currentStock || 0) <= (product?.inventory?.reorderPoint || 0)
@@ -2450,6 +2434,7 @@ const SalesOrders = ({ tabId }) => {
                               )
                             }));
                           }}
+                          onFocus={(e) => e.target.select()}
                           className={`input text-center h-8 ${lastPurchasePrices[item.product?.toString()] !== undefined &&
                             item.unitPrice < lastPurchasePrices[item.product?.toString()]
                             ? 'border-red-500 bg-red-50'
@@ -2504,6 +2489,17 @@ const SalesOrders = ({ tabId }) => {
                             </div>
                           )}
                           <div className="min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span
+                                className={`text-xs font-semibold px-2 py-0.5 rounded transition-colors duration-300 ${
+                                  serialHighlight
+                                    ? 'bg-green-100 text-green-800 border border-green-400 ring-2 ring-green-300/80'
+                                    : 'text-gray-500 bg-gray-100'
+                                }`}
+                              >
+                                #{index + 1}
+                              </span>
+                            </div>
                             <h5 className="font-medium text-sm text-gray-900 truncate">
                               {safeRender(product?.name) || 'Unknown Product'}
                             </h5>
@@ -2601,6 +2597,7 @@ const SalesOrders = ({ tabId }) => {
                                 )
                               }));
                             }}
+                            onFocus={(e) => e.target.select()}
                             className={`input text-center h-8 text-sm w-full ${lastPurchasePrices[item.product?.toString()] !== undefined &&
                               item.unitPrice < lastPurchasePrices[item.product?.toString()]
                               ? 'border-red-500 bg-red-50'
@@ -2634,6 +2631,7 @@ const SalesOrders = ({ tabId }) => {
                   </div>
                 );
               })}
+              </div>
             </div>
           )}
         </div>
@@ -3047,6 +3045,7 @@ const SalesOrders = ({ tabId }) => {
               <p>No sales orders found for the selected criteria.</p>
             </div>
           ) : (
+            <>
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
@@ -3205,6 +3204,14 @@ const SalesOrders = ({ tabId }) => {
                 </tbody>
               </table>
             </div>
+            <PaginationControls
+              page={Number(paginationInfo.current ?? pagination.page) || 1}
+              totalPages={Math.max(1, Number(paginationInfo.pages) || 1)}
+              onPageChange={(p) => setPagination((prev) => ({ ...prev, page: p }))}
+              totalItems={paginationInfo.total}
+              limit={pagination.limit}
+            />
+            </>
           )}
         </div>
       </div>

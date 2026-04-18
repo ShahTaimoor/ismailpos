@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   ShoppingCart,
   Search,
@@ -25,7 +26,8 @@ import {
 } from 'lucide-react';
 import BaseModal from '../components/BaseModal';
 import { useLazyGetLastPurchasePriceQuery, useGetLastPurchasePricesMutation } from '../store/services/productsApi';
-import { useGetCustomersQuery, useGetCustomerQuery, useLazySearchCustomersQuery } from '../store/services/customersApi';
+import { useGetCustomerQuery, useLazySearchCustomersQuery } from '../store/services/customersApi';
+import { useDebouncedCustomerSearch } from '../hooks/useDebouncedCustomerSearch';
 import {
   useCreateSaleMutation,
   useUpdateOrderMutation,
@@ -82,6 +84,28 @@ import { getLocalDateString } from '../utils/dateUtils';
 
 import { ProductSearch } from '../components/sales/ProductSearch';
 
+/** Cart → print payload: names, optional manual photo, dual-unit qty for invoice/PDF. */
+function mapCartItemsForInvoicePrint(cart) {
+  if (!Array.isArray(cart)) return [];
+  return cart.map((item) => {
+    const p = item.product || {};
+    const line = {
+      product: {
+        name: p.name,
+        ...(p.imageUrl ? { imageUrl: p.imageUrl } : {}),
+      },
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      name: p.name,
+    };
+    if (p.imageUrl) line.imageUrl = p.imageUrl;
+    if (item.boxes != null || item.pieces != null) {
+      line.boxes = item.boxes;
+      line.pieces = item.pieces;
+    }
+    return line;
+  });
+}
 
 export const Sales = ({ tabId, editData }) => {
   // Store refetch function from ProductSearch component
@@ -118,7 +142,7 @@ export const Sales = ({ tabId, editData }) => {
   const [previewImageProduct, setPreviewImageProduct] = useState(null);
   const [showCostPrice, setShowCostPrice] = useState(false); // Toggle to show/hide cost prices
   const [showProductImages, setShowProductImages] = useState(localStorage.getItem('showProductImagesUI') !== 'false');
-  
+
   useEffect(() => {
     const handleConfigChange = () => {
       setShowProductImages(localStorage.getItem('showProductImagesUI') !== 'false');
@@ -138,7 +162,7 @@ export const Sales = ({ tabId, editData }) => {
   const { updateTabTitle, getActiveTab, openTab } = useTab();
   const { hasPermission, user } = useAuth();
   const { companyInfo: companySettings } = useCompanyInfo();
-  
+
   const allowSaleWithoutProductEnabled = companySettings.orderSettings?.allowSaleWithoutProduct === true;
   const allowManualCostPriceEnabled = companySettings.orderSettings?.allowManualCostPrice === true;
   const globalShowCostPriceAllowed = companySettings.orderSettings?.showCostPrice !== false; // Default to true if not set
@@ -345,12 +369,9 @@ export const Sales = ({ tabId, editData }) => {
     { staleTime: 5 * 60_000 }
   );
 
-  const { data: customersData, isLoading: customersLoading, refetch: refetchCustomers } = useGetCustomersQuery(
-    { limit: 999999 },
-    {
-      staleTime: 0, // Always consider data stale to get fresh credit information
-      refetchOnMountOrArgChange: true // Refetch when component mounts or params change
-    }
+  const { customers, isLoading: customersLoading, isFetching: customersFetching } = useDebouncedCustomerSearch(
+    customerSearchTerm,
+    { selectedCustomer }
   );
 
   // Lazy query hooks for fetching last purchase prices
@@ -369,16 +390,47 @@ export const Sales = ({ tabId, editData }) => {
   const isSubmittingRef = useRef(false); // For immediate synchronous checks
   const [isSubmitting, setIsSubmitting] = useState(false); // For button disabled state
 
+  const cartScrollRef = useRef(null);
+  /** Row roots for scroll-into-view after add (virtualized lines). */
+  const cartLineElRefs = useRef(new Map());
+  /** Line index (0-based) for green S.NO; cleared when cart empties or after checkout / clear cart. */
+  const [highlightedCartLineIndex, setHighlightedCartLineIndex] = useState(null);
+  /** Inner cart scrollbar only after 10 lines; first 10 rows grow with the page. */
+  const cartNeedsInnerScroll = cart.length > 10;
+  const cartVirtualizer = useVirtualizer({
+    count: cart.length,
+    getScrollElement: () => cartScrollRef.current,
+    estimateSize: () => 96,
+    overscan: 6,
+  });
+
+  useLayoutEffect(() => {
+    if (highlightedCartLineIndex === null) return;
+    const idx = highlightedCartLineIndex;
+    cartScrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (cartNeedsInnerScroll) {
+      cartVirtualizer.scrollToIndex(idx, { align: 'center', behavior: 'smooth' });
+    } else {
+      requestAnimationFrame(() => {
+        cartLineElRefs.current.get(idx)?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'nearest',
+          inline: 'nearest',
+        });
+      });
+    }
+  }, [highlightedCartLineIndex, cartNeedsInnerScroll, cart.length, cartVirtualizer]);
+
+  /** Green S.NO stays until the next add highlights another line, or cart is cleared / sold. */
+  useEffect(() => {
+    if (cart.length === 0) setHighlightedCartLineIndex(null);
+  }, [cart.length]);
+
   // Helper function to reset submitting state (ensures both ref and state are reset)
   const resetSubmittingState = useCallback(() => {
     isSubmittingRef.current = false;
     setIsSubmitting(false);
   }, []);
-
-  // Extract customers array from RTK Query response
-  const customers = useMemo(() => {
-    return customersData?.data?.customers || customersData?.customers || customersData?.data || customersData || [];
-  }, [customersData]);
 
   const selectedCustomerId = selectedCustomer?.id ?? selectedCustomer?._id ?? null;
   const { data: selectedCustomerDetail } = useGetCustomerQuery(selectedCustomerId, {
@@ -473,7 +525,7 @@ export const Sales = ({ tabId, editData }) => {
     // If bt is not provided, use selectedCustomer's type as fallback
     const businessType = bt || selectedCustomer?.business_type || selectedCustomer?.businessType;
     if (!businessType) return 'retail';
-    
+
     const type = String(businessType).toLowerCase();
     if (type === 'retail' || type === 'wholesale') return type;
     if (type === 'distributor') return 'wholesale'; // Distributors are wholesale customers
@@ -552,12 +604,15 @@ export const Sales = ({ tabId, editData }) => {
     const product = item?.product;
     if (!product) return;
 
+    let highlightLineIndex = null;
+
     setCart(prevCart => {
       // For variants, use variant _id; for products, use product _id
       const itemId = product._id ?? product.id;
       const existingItem = prevCart.find(c => (c.product?._id ?? c.product?.id) === itemId);
 
       if (existingItem) {
+        highlightLineIndex = prevCart.findIndex(c => (c.product?._id ?? c.product?.id) === itemId);
         // Check if combined quantity exceeds available stock
         const combinedQuantity = existingItem.quantity + item.quantity;
         const availableStock = product.inventory?.currentStock || 0;
@@ -580,6 +635,8 @@ export const Sales = ({ tabId, editData }) => {
 
         return updatedCart;
       }
+
+      highlightLineIndex = prevCart.length;
 
       // New item added - fetch its last purchase price (always, for loss alerts)
       // For variants, use base product ID to get purchase price
@@ -607,6 +664,10 @@ export const Sales = ({ tabId, editData }) => {
       // applying last prices, so there's nothing to restore
       return [...prevCart, item];
     });
+
+    if (highlightLineIndex !== null && highlightLineIndex >= 0) {
+      setHighlightedCartLineIndex(highlightLineIndex);
+    }
   };
 
   const updateCartBoxCount = (productId, newBoxes) => {
@@ -961,6 +1022,7 @@ export const Sales = ({ tabId, editData }) => {
       confirmClear(cart.length, 'items', async () => {
         try {
           setCart([]);
+          setHighlightedCartLineIndex(null);
           setSelectedCustomer(null);
           setCustomerSearchTerm('');
           setAppliedDiscounts([]);
@@ -1013,6 +1075,7 @@ export const Sales = ({ tabId, editData }) => {
 
       // Reset cart and form
       setCart([]);
+      setHighlightedCartLineIndex(null);
       // Don't reset selectedCustomer immediately - let it update from refetched data
       // setSelectedCustomer(null);
       setAmountPaid(0);
@@ -1078,6 +1141,7 @@ export const Sales = ({ tabId, editData }) => {
 
       // Reset cart and form
       setCart([]);
+      setHighlightedCartLineIndex(null);
       // Don't reset selectedCustomer immediately - let it update from refetched data
       // setSelectedCustomer(null);
       setAmountPaid(0);
@@ -1191,13 +1255,32 @@ export const Sales = ({ tabId, editData }) => {
       orderType: mapBusinessTypeToOrderType(selectedCustomer?.businessType),
       customer: selectedCustomer?.id || selectedCustomer?._id,
       items: cart.map(item => {
+        const productId = item.product?._id ?? item.product?.id;
+        const isManualLine =
+          item.product?.isManual === true ||
+          (typeof productId === 'string' && productId.startsWith('manual_'));
         const base = {
-          product: item.product._id,
+          product: productId,
           quantity: Math.round(item.quantity),
           unitPrice: item.unitPrice,
-          isManual: item.product.isManual || false,
-          name: item.product.name
+          isManual: isManualLine,
+          name: item.product?.name
         };
+        if (isManualLine) {
+          const uc = Number(
+            item.product?.pricing?.cost ??
+              item.product?.pricing?.cost_price ??
+              item.product?.cost_price ??
+              item.product?.costPrice ??
+              0
+          );
+          if (Number.isFinite(uc) && uc >= 0) {
+            base.unitCost = uc;
+          }
+        }
+        if (item.product?.imageUrl) {
+          base.imageUrl = item.product.imageUrl;
+        }
         if (item.boxes != null || item.pieces != null) {
           base.boxes = item.boxes;
           base.pieces = item.pieces;
@@ -1235,17 +1318,21 @@ export const Sales = ({ tabId, editData }) => {
         orderType: mapBusinessTypeToOrderType(selectedCustomer?.businessType),
         customer: selectedCustomer?.id || selectedCustomer?._id,
         items: cart.map(item => {
+          const productId = item.product?._id ?? item.product?.id;
+          const isManualLine =
+            item.product?.isManual === true ||
+            (typeof productId === 'string' && productId.startsWith('manual_'));
           const itemSubtotal = item.quantity * item.unitPrice;
           const itemDiscountAmount = 0; // Can be calculated if needed
           const itemTaxAmount = 0; // Can be calculated if needed
           const itemTotal = itemSubtotal - itemDiscountAmount + itemTaxAmount;
 
           const base = {
-            product: item.product._id,
+            product: productId,
             quantity: Math.round(item.quantity),
             unitPrice: item.unitPrice,
-            isManual: item.product.isManual || false,
-            name: item.product.name,
+            isManual: isManualLine,
+            name: item.product?.name,
             discountPercent: 0,
             taxRate: 0,
             subtotal: itemSubtotal,
@@ -1253,6 +1340,21 @@ export const Sales = ({ tabId, editData }) => {
             taxAmount: itemTaxAmount,
             total: itemTotal
           };
+          if (item.product?.imageUrl) {
+            base.imageUrl = item.product.imageUrl;
+          }
+          if (isManualLine) {
+            const uc = Number(
+              item.product?.pricing?.cost ??
+                item.product?.pricing?.cost_price ??
+                item.product?.cost_price ??
+                item.product?.costPrice ??
+                0
+            );
+            if (Number.isFinite(uc) && uc >= 0) {
+              base.unitCost = uc;
+            }
+          }
           if (item.boxes != null || item.pieces != null) {
             base.boxes = item.boxes;
             base.pieces = item.pieces;
@@ -1403,7 +1505,7 @@ export const Sales = ({ tabId, editData }) => {
                   </div>
                 );
               }}
-              loading={customersLoading}
+              loading={customersLoading || customersFetching}
               emptyMessage="No customers found"
             />
           </div>
@@ -1653,18 +1755,44 @@ export const Sales = ({ tabId, editData }) => {
               />
             )}
           >
-            {cart.map((item, index) => {
+            <div
+              ref={cartScrollRef}
+              className={
+                cartNeedsInnerScroll
+                  ? 'max-h-[min(70vh,860px)] overflow-y-auto -mx-1 px-1 [scrollbar-gutter:stable]'
+                  : 'overflow-visible -mx-1 px-1'
+              }
+            >
+              <div
+                className="relative w-full"
+                style={{ height: `${cartVirtualizer.getTotalSize()}px` }}
+              >
+                {cartVirtualizer.getVirtualItems().map((virtualRow) => {
+              const item = cart[virtualRow.index];
+              const index = virtualRow.index;
               const totalPrice = item.unitPrice * item.quantity;
               const isLowStock = item.product.inventory?.currentStock <= item.product.inventory?.reorderPoint;
 
+              const serialHighlight = highlightedCartLineIndex === index;
+
               return (
-                <div key={item.product._id}>
+                <div
+                  key={virtualRow.key}
+                  data-index={virtualRow.index}
+                  ref={(node) => {
+                    cartVirtualizer.measureElement(node);
+                    if (node) cartLineElRefs.current.set(index, node);
+                    else cartLineElRefs.current.delete(index);
+                  }}
+                  className="absolute left-0 top-0 w-full"
+                  style={{ transform: `translateY(${virtualRow.start}px)` }}
+                >
                   {/* Mobile Card View */}
                   <div className="md:hidden mb-4 p-3 border border-gray-200 rounded-lg bg-white shadow-sm">
                     <div className="flex items-start justify-between mb-3">
                       <div className="flex-1 min-w-0 flex items-center gap-3">
                         {item.product?.imageUrl && showProductImages && (
-                          <div 
+                          <div
                             className="h-10 w-10 flex-shrink-0 bg-gray-100 rounded overflow-hidden border border-gray-200 cursor-pointer hover:border-primary-500 transition-colors group relative"
                             onClick={() => setPreviewImageProduct(item.product)}
                             title="Click to view full size"
@@ -1677,42 +1805,50 @@ export const Sales = ({ tabId, editData }) => {
                         )}
                         <div className="flex flex-col min-w-0">
                           <div className="flex items-center gap-2 mb-1">
-                            <span className="text-xs font-semibold text-gray-500 bg-gray-100 px-2 py-0.5 rounded">#{index + 1}</span>
+                            <span
+                              className={`text-xs font-semibold px-2 py-0.5 rounded transition-colors duration-300 ${
+                                serialHighlight
+                                  ? 'bg-green-100 text-green-800 border border-green-400 ring-2 ring-green-300/80'
+                                  : 'text-gray-500 bg-gray-100'
+                              }`}
+                            >
+                              #{index + 1}
+                            </span>
                             <span className="font-medium text-sm truncate">
                               {item.product.isVariant
-                              ? (item.product.displayName || item.product.variantName || item.product.name)
-                              : item.product.name}
-                          </span>
-                        </div>
-                        {item.product.isVariant && (
-                          <span className="text-xs text-gray-500 block">
-                            {item.product.variantType}: {item.product.variantValue}
-                          </span>
-                        )}
-                        <div className="flex flex-wrap items-center gap-2 mt-1">
-                          {isLowStock && <span className="text-yellow-600 text-xs">⚠️ Low Stock</span>}
-                          {lastPurchasePrices[item.product._id] !== undefined &&
-                            item.unitPrice < lastPurchasePrices[item.product._id] && (
-                              <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold">
-                                ⚠️ Loss
-                              </span>
-                            )}
-                          {isLastPricesApplied && priceStatus[item.product._id] && (
-                            <span className={`text-xs px-1.5 py-0.5 rounded ${priceStatus[item.product._id] === 'updated'
-                              ? 'bg-green-100 text-green-700'
-                              : priceStatus[item.product._id] === 'unchanged'
-                                ? 'bg-blue-100 text-blue-700'
-                                : 'bg-yellow-100 text-yellow-700'
-                              }`}>
-                              {priceStatus[item.product._id] === 'updated'
-                                ? 'Updated'
-                                : priceStatus[item.product._id] === 'unchanged'
-                                  ? 'Same Price'
-                                  : 'Not in Last Order'}
+                                ? (item.product.displayName || item.product.variantName || item.product.name)
+                                : item.product.name}
+                            </span>
+                          </div>
+                          {item.product.isVariant && (
+                            <span className="text-xs text-gray-500 block">
+                              {item.product.variantType}: {item.product.variantValue}
                             </span>
                           )}
+                          <div className="flex flex-wrap items-center gap-2 mt-1">
+                            {isLowStock && <span className="text-yellow-600 text-xs">⚠️ Low Stock</span>}
+                            {lastPurchasePrices[item.product._id] !== undefined &&
+                              item.unitPrice < lastPurchasePrices[item.product._id] && (
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold">
+                                  ⚠️ Loss
+                                </span>
+                              )}
+                            {isLastPricesApplied && priceStatus[item.product._id] && (
+                              <span className={`text-xs px-1.5 py-0.5 rounded ${priceStatus[item.product._id] === 'updated'
+                                ? 'bg-green-100 text-green-700'
+                                : priceStatus[item.product._id] === 'unchanged'
+                                  ? 'bg-blue-100 text-blue-700'
+                                  : 'bg-yellow-100 text-yellow-700'
+                                }`}>
+                                {priceStatus[item.product._id] === 'updated'
+                                  ? 'Updated'
+                                  : priceStatus[item.product._id] === 'unchanged'
+                                    ? 'Same Price'
+                                    : 'Not in Last Order'}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      </div>
                       </div>
                       <LoadingButton
                         onClick={() => removeFromCart(item.product._id)}
@@ -1745,6 +1881,7 @@ export const Sales = ({ tabId, editData }) => {
                                 onChange={(e) =>
                                   updateCartBoxCount(item.product._id, e.target.value)
                                 }
+                                onFocus={(e) => e.target.select()}
                                 className={`text-sm font-semibold w-full rounded border px-2 py-1 text-center focus:outline-none focus:ring-2 focus:ring-primary-500/35 ${(item.product.inventory?.currentStock || 0) === 0
                                   ? 'text-red-700 bg-red-50 border-red-200'
                                   : (item.product.inventory?.currentStock || 0) <=
@@ -1800,6 +1937,7 @@ export const Sales = ({ tabId, editData }) => {
                           autoComplete="off"
                           value={Math.round(item.unitPrice)}
                           onChange={(e) => updateUnitPrice(item.product._id, parseInt(e.target.value) || 0)}
+                          onFocus={(e) => e.target.select()}
                           className={`text-center h-8 w-full ${(lastPurchasePrices[item.product._id] !== undefined &&
                             item.unitPrice < lastPurchasePrices[item.product._id])
                             ? 'bg-red-50 border-red-400 ring-2 ring-red-300'
@@ -1839,7 +1977,13 @@ export const Sales = ({ tabId, editData }) => {
                     >
                       {/* Serial Number - 1 column */}
                       <div className="min-w-0 flex justify-start">
-                        <span className="text-sm font-medium text-gray-700 bg-gray-50 px-0.5 py-1 rounded border border-gray-200 block w-8 text-center h-8 flex items-center justify-center">
+                        <span
+                          className={`text-sm font-medium px-0.5 py-1 rounded border block w-8 text-center h-8 flex items-center justify-center transition-colors duration-300 ${
+                            serialHighlight
+                              ? 'bg-green-100 text-green-800 border-green-400 ring-2 ring-green-300/80'
+                              : 'text-gray-700 bg-gray-50 border-gray-200'
+                          }`}
+                        >
                           {index + 1}
                         </span>
                       </div>
@@ -1847,7 +1991,7 @@ export const Sales = ({ tabId, editData }) => {
                       {/* Product Name - mirror Sales Order layout (6 columns normally, 5 when cost column shown) */}
                       <div className="min-w-0 flex items-center h-8 gap-2">
                         {item.product?.imageUrl && showProductImages && (
-                          <div 
+                          <div
                             className="h-8 w-8 flex-shrink-0 bg-gray-100 rounded overflow-hidden border border-gray-200 cursor-pointer hover:border-primary-500 transition-colors group relative"
                             onClick={() => setPreviewImageProduct(item.product)}
                             title="Click to view full size"
@@ -1921,6 +2065,7 @@ export const Sales = ({ tabId, editData }) => {
                                   onChange={(e) =>
                                     updateCartBoxCount(item.product._id, e.target.value)
                                   }
+                                  onFocus={(e) => e.target.select()}
                                   className={`text-sm font-semibold w-full min-w-0 rounded border px-2 py-1 text-center h-8 focus:outline-none focus:ring-2 focus:ring-primary-500/35 ${(item.product.inventory?.currentStock || 0) === 0
                                     ? 'text-red-700 bg-red-50 border-red-200'
                                     : (item.product.inventory?.currentStock || 0) <=
@@ -2001,6 +2146,7 @@ export const Sales = ({ tabId, editData }) => {
                               autoComplete="off"
                               value={Math.round(item.unitPrice)}
                               onChange={(e) => updateUnitPrice(item.product._id, parseInt(e.target.value) || 0)}
+                              onFocus={(e) => e.target.select()}
                               className={`text-center h-8 ${
                                 // Check if sale price is less than cost price - highest priority styling (always check)
                                 isBelowCost
@@ -2069,7 +2215,9 @@ export const Sales = ({ tabId, editData }) => {
                   </div>
                 </div>
               );
-            })}
+                })}
+              </div>
+            </div>
           </CartItemsTableSection>
         </ProductSelectionCartSection>
 
@@ -2546,6 +2694,7 @@ export const Sales = ({ tabId, editData }) => {
                               : Math.min(Math.max(raw, 0), Math.max(0, Math.round(subtotal)));
                             setDirectDiscount((prev) => ({ ...prev, value }));
                           }}
+                          onFocus={(e) => e.target.select()}
                           className="flex-1 h-10 px-3 border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-ring font-medium text-foreground"
                           min="0"
                           step={directDiscount.type === 'percentage' ? '1' : '1'}
@@ -2670,11 +2819,7 @@ export const Sales = ({ tabId, editData }) => {
                                 pendingBalance: selectedCustomer.pendingBalance,
                                 advanceBalance: selectedCustomer.advanceBalance
                               } : null,
-                              items: cart.map(item => ({
-                                product: { name: item.product.name },
-                                quantity: item.quantity,
-                                unitPrice: item.unitPrice
-                              })),
+                              items: mapCartItemsForInvoicePrint(cart),
                               pricing: { subtotal, discountAmount: totalDiscountAmount, taxAmount: tax, isTaxExempt, total },
                               payment: {
                                 method: paymentMethod,
@@ -2716,11 +2861,7 @@ export const Sales = ({ tabId, editData }) => {
                                 pendingBalance: selectedCustomer.pendingBalance,
                                 advanceBalance: selectedCustomer.advanceBalance
                               } : null,
-                              items: cart.map(item => ({
-                                product: { name: item.product.name },
-                                quantity: item.quantity,
-                                unitPrice: item.unitPrice
-                              })),
+                              items: mapCartItemsForInvoicePrint(cart),
                               pricing: { subtotal, discountAmount: totalDiscountAmount, taxAmount: tax, isTaxExempt, total },
                               payment: {
                                 method: paymentMethod,
@@ -2853,9 +2994,9 @@ export const Sales = ({ tabId, editData }) => {
       >
         <div className="flex justify-center items-center bg-gray-50 rounded-lg overflow-hidden min-h-[300px] p-4">
           {previewImageProduct?.imageUrl ? (
-            <img 
-              src={previewImageProduct.imageUrl} 
-              alt="Product Preview" 
+            <img
+              src={previewImageProduct.imageUrl}
+              alt="Product Preview"
               className="max-w-full max-h-[70vh] object-contain"
             />
           ) : (

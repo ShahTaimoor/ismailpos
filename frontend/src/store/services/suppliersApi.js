@@ -19,6 +19,7 @@ export const suppliersApi = api.injectEndpoints({
           params: filteredParams,
         };
       },
+      keepUnusedDataFor: 60,
       providesTags: (result) =>
         result?.data?.suppliers
           ? [
@@ -133,10 +134,10 @@ export const suppliersApi = api.injectEndpoints({
       providesTags: [{ type: 'Suppliers', id: 'SEARCH' }],
     }),
     bulkCreateSuppliers: builder.mutation({
-      query: (suppliers) => ({
+      query: ({ suppliers, autoCreateCities = true }) => ({
         url: 'suppliers/bulk-create',
         method: 'post',
-        data: { suppliers },
+        data: { suppliers, autoCreateCities },
       }),
       invalidatesTags: [
         { type: 'Suppliers', id: 'LIST' },
@@ -150,6 +151,7 @@ export const suppliersApi = api.injectEndpoints({
 
 export const {
   useGetSuppliersQuery,
+  useLazyGetSuppliersQuery,
   useCreateSupplierMutation,
   useUpdateSupplierMutation,
   useDeleteSupplierMutation,

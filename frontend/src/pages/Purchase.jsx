@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import {
   Package,
   Plus,
@@ -68,7 +68,17 @@ import AsyncErrorBoundary from '../components/AsyncErrorBoundary';
 import { useResponsive } from '../components/ResponsiveContainer';
 import { ProductSearch as SharedSalesProductSearch } from '../components/sales/ProductSearch';
 
-const PurchaseItem = ({ item, index, onUpdateQuantity, onUpdateCost, onRemove, onUpdateCartBoxCount, showProductImages, setPreviewImageProduct }) => {
+const PurchaseItem = ({
+  item,
+  index,
+  onUpdateQuantity,
+  onUpdateCost,
+  onRemove,
+  onUpdateCartBoxCount,
+  showProductImages,
+  setPreviewImageProduct,
+  highlightSerial = false,
+}) => {
   const { companyInfo: companySettings } = useCompanyInfo();
   const dualUnitShowBoxInputEnabled = companySettings.orderSettings?.dualUnitShowBoxInput !== false;
   const dualUnitShowPiecesInputEnabled = companySettings.orderSettings?.dualUnitShowPiecesInput !== false;
@@ -173,6 +183,7 @@ const PurchaseItem = ({ item, index, onUpdateQuantity, onUpdateCost, onRemove, o
                 autoComplete="off"
                 value={item.quantity}
                 onChange={(e) => onUpdateQuantity(item.product?._id, parseInt(e.target.value) || 1)}
+                onFocus={(e) => e.target.select()}
                 className="input text-center text-sm h-8"
                 min="1"
               />
@@ -186,6 +197,7 @@ const PurchaseItem = ({ item, index, onUpdateQuantity, onUpdateCost, onRemove, o
               autoComplete="off"
               value={item.costPerUnit}
               onChange={(e) => onUpdateCost(item.product?._id, parseFloat(e.target.value) || 0)}
+              onFocus={(e) => e.target.select()}
               className="input text-center text-sm h-8"
               min="0"
             />
@@ -203,7 +215,13 @@ const PurchaseItem = ({ item, index, onUpdateQuantity, onUpdateCost, onRemove, o
           }`}
         >
           <div className="min-w-0 flex justify-start">
-            <span className="text-sm font-medium text-gray-700 bg-gray-50 px-0.5 py-1 rounded border border-gray-200 block w-8 text-center h-8 flex items-center justify-center">
+            <span
+              className={`text-sm font-medium px-0.5 py-1 rounded border block w-8 text-center h-8 flex items-center justify-center transition-colors duration-300 ${
+                highlightSerial
+                  ? 'bg-green-100 text-green-800 border-green-400 ring-2 ring-green-300/80'
+                  : 'text-gray-700 bg-gray-50 border-gray-200'
+              }`}
+            >
               {index + 1}
             </span>
           </div>
@@ -258,6 +276,7 @@ const PurchaseItem = ({ item, index, onUpdateQuantity, onUpdateCost, onRemove, o
                       min={0}
                       value={item.quantity === 0 ? '' : boxVal}
                       onChange={(e) => onUpdateCartBoxCount(item.product?._id, e.target.value)}
+                      onFocus={(e) => e.target.select()}
                       className={`text-sm font-semibold w-full min-w-0 rounded border px-2 py-1 text-center h-8 focus:outline-none focus:ring-2 focus:ring-primary-500/35 ${
                         (product.inventory?.currentStock || 0) === 0
                           ? 'text-red-700 bg-red-50 border-red-200'
@@ -324,6 +343,7 @@ const PurchaseItem = ({ item, index, onUpdateQuantity, onUpdateCost, onRemove, o
               autoComplete="off"
               value={item.costPerUnit}
               onChange={(e) => onUpdateCost(item.product?._id, parseFloat(e.target.value) || 0)}
+              onFocus={(e) => e.target.select()}
               className="text-center h-8"
               min="0"
             />
@@ -382,6 +402,32 @@ const ProductSearch = ({ onAddProduct, onRefetchReady }) => {
 
 export const Purchase = ({ tabId, editData }) => {
   const [purchaseItems, setPurchaseItems] = useState([]);
+  const purchaseCartScrollRef = useRef(null);
+  const purchaseCartLineElRefs = useRef(new Map());
+  const [highlightedPurchaseLineIndex, setHighlightedPurchaseLineIndex] = useState(null);
+  const purchaseCartNeedsInnerScroll = purchaseItems.length > 10;
+
+  useLayoutEffect(() => {
+    if (highlightedPurchaseLineIndex === null) return;
+    const idx = highlightedPurchaseLineIndex;
+    purchaseCartScrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (purchaseCartNeedsInnerScroll) {
+      const el = purchaseCartLineElRefs.current.get(idx);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    } else {
+      requestAnimationFrame(() => {
+        purchaseCartLineElRefs.current.get(idx)?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'nearest',
+          inline: 'nearest',
+        });
+      });
+    }
+  }, [highlightedPurchaseLineIndex, purchaseCartNeedsInnerScroll, purchaseItems.length]);
+
+  useEffect(() => {
+    if (purchaseItems.length === 0) setHighlightedPurchaseLineIndex(null);
+  }, [purchaseItems.length]);
   const [selectedSupplier, setSelectedSupplier] = useState(null);
   const [supplierSearchTerm, setSupplierSearchTerm] = useState('');
   const [invoiceNumber, setInvoiceNumber] = useState('');
@@ -522,8 +568,8 @@ export const Purchase = ({ tabId, editData }) => {
     selectedSupplier?._id,
     {
       skip: !selectedSupplier?._id,
-      staleTime: 0, // Always consider data stale to get fresh balance information
-      refetchOnMountOrArgChange: true, // Refetch when component mounts or params change
+      staleTime: 60_000,
+      refetchOnMountOrArgChange: true,
     }
   );
 
@@ -636,6 +682,7 @@ export const Purchase = ({ tabId, editData }) => {
     // Clear cart when supplier changes (only in new purchase mode, not in edit mode)
     if (purchaseItems.length > 0 && !editData?.isEditMode) {
       setPurchaseItems([]);
+      setHighlightedPurchaseLineIndex(null);
       toast.success('Purchase items cleared due to supplier change. Please re-add products.');
     }
   };
@@ -697,6 +744,7 @@ export const Purchase = ({ tabId, editData }) => {
       }
 
       setPurchaseItems([]);
+      setHighlightedPurchaseLineIndex(null);
       // Don't clear selectedSupplier immediately - let it update from refetched data
       // setSelectedSupplier(null);
       setAmountPaid(0);
@@ -842,6 +890,7 @@ export const Purchase = ({ tabId, editData }) => {
   const totalPayables = total + supplierOutstanding;
 
   const addToPurchase = (newItem) => {
+    let highlightLineIndex = null;
     setPurchaseItems(prevItems => {
       const existingItem = prevItems.find(item => item.product?._id === newItem.product?._id);
       if (existingItem) {
@@ -861,6 +910,8 @@ export const Purchase = ({ tabId, editData }) => {
           return prevItems;
         }
 
+        highlightLineIndex = prevItems.findIndex((item) => item.product?._id === newItem.product?._id);
+
         // User confirmed, update existing item quantity and cost (re-split boxes/pieces when dual)
         return prevItems.map(item =>
           item.product?._id === newItem.product?._id
@@ -878,8 +929,12 @@ export const Purchase = ({ tabId, editData }) => {
             : item
         );
       }
+      highlightLineIndex = prevItems.length;
       return [...prevItems, newItem];
     });
+    if (highlightLineIndex !== null && highlightLineIndex >= 0) {
+      setHighlightedPurchaseLineIndex(highlightLineIndex);
+    }
   };
 
   const updateQuantity = (productId, newQuantity, dualBreakdown) => {
@@ -1280,9 +1335,23 @@ export const Purchase = ({ tabId, editData }) => {
               />
             )}
           >
+            <div
+              ref={purchaseCartScrollRef}
+              className={
+                purchaseCartNeedsInnerScroll
+                  ? 'max-h-[min(70vh,860px)] overflow-y-auto -mx-1 px-1 [scrollbar-gutter:stable]'
+                  : 'overflow-visible -mx-1 px-1'
+              }
+            >
             {purchaseItems.map((item, index) => (
+              <div
+                key={item.product?._id ?? index}
+                ref={(node) => {
+                  if (node) purchaseCartLineElRefs.current.set(index, node);
+                  else purchaseCartLineElRefs.current.delete(index);
+                }}
+              >
               <PurchaseItem
-                key={item.product?._id}
                 item={item}
                 index={index}
                 onUpdateQuantity={updateQuantity}
@@ -1291,8 +1360,11 @@ export const Purchase = ({ tabId, editData }) => {
                 onUpdateCartBoxCount={updateCartBoxCount}
                 showProductImages={showProductImages}
                 setPreviewImageProduct={setPreviewImageProduct}
+                highlightSerial={highlightedPurchaseLineIndex === index}
               />
+              </div>
             ))}
+            </div>
           </CartItemsTableSection>
         </ProductSelectionCartSection>
 
@@ -1595,6 +1667,7 @@ export const Purchase = ({ tabId, editData }) => {
                             const value = parseFloat(e.target.value) || 0;
                             setDirectDiscount({ ...directDiscount, value });
                           }}
+                          onFocus={(e) => e.target.select()}
                           className="flex-1 h-10 px-3 border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-ring font-medium text-foreground"
                           min="0"
                           step={directDiscount.type === 'percentage' ? '0.1' : '0.01'}
@@ -1648,6 +1721,7 @@ export const Purchase = ({ tabId, editData }) => {
                     <Button
                       onClick={() => {
                         setPurchaseItems([]);
+                        setHighlightedPurchaseLineIndex(null);
                         setSelectedSupplier(null);
                         setSupplierSearchTerm('');
                         setTaxExempt(true);

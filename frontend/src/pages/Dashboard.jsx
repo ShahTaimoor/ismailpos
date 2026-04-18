@@ -28,18 +28,19 @@ import {
 import DashboardReportModal from '../components/DashboardReportModal';
 import {
   useGetTodaySummaryQuery,
-  useGetOrdersQuery,
+  useLazyGetOrdersQuery,
   useLazyGetPeriodSummaryQuery,
 } from '../store/services/salesApi';
 import { useGetLowStockItemsQuery, useGetInventorySummaryQuery } from '../store/services/inventoryApi';
 import { useGetCustomersQuery } from '../store/services/customersApi';
-import { useGetSalesOrdersQuery } from '../store/services/salesOrdersApi';
-import { useGetPurchaseOrdersQuery } from '../store/services/purchaseOrdersApi';
-import { useGetPurchaseInvoicesQuery } from '../store/services/purchaseInvoicesApi';
-import { useGetCashReceiptsQuery } from '../store/services/cashReceiptsApi';
-import { useGetCashPaymentsQuery } from '../store/services/cashPaymentsApi';
-import { useGetBankReceiptsQuery } from '../store/services/bankReceiptsApi';
-import { useGetBankPaymentsQuery } from '../store/services/bankPaymentsApi';
+import { useLazyGetSalesOrdersQuery } from '../store/services/salesOrdersApi';
+import { useLazyGetPurchaseOrdersQuery } from '../store/services/purchaseOrdersApi';
+import { useLazyGetPurchaseInvoicesQuery } from '../store/services/purchaseInvoicesApi';
+import { useLazyGetCashReceiptsQuery } from '../store/services/cashReceiptsApi';
+import { useLazyGetCashPaymentsQuery } from '../store/services/cashPaymentsApi';
+import { useLazyGetBankReceiptsQuery } from '../store/services/bankReceiptsApi';
+import { useLazyGetBankPaymentsQuery } from '../store/services/bankPaymentsApi';
+import { useGetDashboardRangeSummaryQuery } from '../store/services/dashboardApi';
 import { useGetUpcomingExpensesQuery } from '../store/services/expensesApi';
 import { useGetCompanySettingsQuery } from '../store/services/settingsApi';
 import { useGetSummaryQuery } from '../store/services/plStatementsApi';
@@ -103,7 +104,7 @@ export const Dashboard = () => {
     setDashboardHidden(next);
     try {
       localStorage.setItem(DASHBOARD_HIDDEN_KEY, String(next));
-    } catch (_) {}
+    } catch (_) { }
   };
 
   // Listen for dashboard visibility changes from MultiTabLayout
@@ -163,10 +164,8 @@ export const Dashboard = () => {
   };
 
   const { data: todaySummary, isLoading: summaryLoading, error: todaySummaryError } = useGetTodaySummaryQuery(undefined, {
-    pollingInterval: 30000, // Refetch every 30 seconds
+    pollingInterval: 60000,
   });
-
-  // Debug: Log the summary data to see what we're getting
 
   if (todaySummaryError) {
     console.error('Today Summary Error:', todaySummaryError);
@@ -177,72 +176,71 @@ export const Dashboard = () => {
   const { data: inventoryData, isLoading: inventoryLoading } = useGetInventorySummaryQuery();
 
   const { data: customersData, isLoading: customersLoading } = useGetCustomersQuery(
-    { status: 'active' }
+    { status: 'active', limit: 1, page: 1 }
   );
 
-  // Pending Sales Orders data (draft status only)
-  const { data: pendingSalesOrdersData, isLoading: pendingSalesOrdersLoading } = useGetSalesOrdersQuery(
-    { status: 'draft' }
-  );
-
-  // All Sales Orders data (for total value calculation)
-  // Use 'all' parameter to get all orders without pagination
-  const { data: salesOrdersData, isLoading: salesOrdersLoading } = useGetSalesOrdersQuery(
-    { dateFrom: startDate, dateTo: endDate, all: true },
-    { skip: !startDate || !endDate }
-  );
-
-  // Pending Purchase Orders data (draft status only)
-  const { data: pendingPurchaseOrdersData, isLoading: pendingPurchaseOrdersLoading } = useGetPurchaseOrdersQuery(
-    { status: 'draft' }
-  );
-
-  // All Purchase Orders data (for total value calculation)
-  const { data: purchaseOrdersData, isLoading: purchaseOrdersLoading } = useGetPurchaseOrdersQuery(
+  const { data: rangeSummaryRes, isLoading: rangeSummaryLoading } = useGetDashboardRangeSummaryQuery(
     { dateFrom: startDate, dateTo: endDate },
-    { skip: !startDate || !endDate }
+    {
+      skip: !startDate || !endDate,
+      refetchOnMountOrArgChange: true,
+      pollingInterval: 120000,
+    }
   );
 
-  // Sales Invoices (from Sales page) - actual completed sales
-  // Use 'all' parameter to get all orders without pagination
-  const { data: salesInvoicesData, isLoading: salesInvoicesLoading } = useGetOrdersQuery(
-    { dateFrom: startDate, dateTo: endDate, all: true },
-    { skip: !startDate || !endDate }
-  );
+  const [fetchSalesOrdersModal, soModalState] = useLazyGetSalesOrdersQuery();
+  const [fetchPurchaseOrdersModal, poModalState] = useLazyGetPurchaseOrdersQuery();
+  const [fetchSalesInvoicesModal, siModalState] = useLazyGetOrdersQuery();
+  const [fetchPurchaseInvoicesModal, piModalState] = useLazyGetPurchaseInvoicesQuery();
+  const [fetchCashReceiptsModal, crModalState] = useLazyGetCashReceiptsQuery();
+  const [fetchCashPaymentsModal, cpModalState] = useLazyGetCashPaymentsQuery();
+  const [fetchBankReceiptsModal, brModalState] = useLazyGetBankReceiptsQuery();
+  const [fetchBankPaymentsModal, bpModalState] = useLazyGetBankPaymentsQuery();
 
-  // Purchase Invoices (from Purchase page) - use all: true for accurate totals in date range
-  const { data: purchaseInvoicesData, isLoading: purchaseInvoicesLoading } = useGetPurchaseInvoicesQuery(
-    { dateFrom: startDate, dateTo: endDate, all: true },
-    { skip: !startDate || !endDate }
-  );
+  const rangeParams = { dateFrom: startDate, dateTo: endDate, all: true };
+  useEffect(() => {
+    if (!startDate || !endDate) return;
+    if (showSalesOrdersModal) fetchSalesOrdersModal(rangeParams);
+  }, [showSalesOrdersModal, startDate, endDate, fetchSalesOrdersModal]);
 
-  // Cash Receipts data - use all: true to fetch all records in date range for accurate totals
-  const { data: cashReceiptsData, isLoading: cashReceiptsLoading } = useGetCashReceiptsQuery(
-    { dateFrom: startDate, dateTo: endDate, all: true },
-    { skip: !startDate || !endDate }
-  );
+  useEffect(() => {
+    if (!startDate || !endDate) return;
+    if (showPurchaseOrdersModal) fetchPurchaseOrdersModal(rangeParams);
+  }, [showPurchaseOrdersModal, startDate, endDate, fetchPurchaseOrdersModal]);
 
-  // Cash Payments data - use all: true to fetch all records in date range for accurate totals
-  const { data: cashPaymentsData, isLoading: cashPaymentsLoading } = useGetCashPaymentsQuery(
-    { dateFrom: startDate, dateTo: endDate, all: true },
-    { skip: !startDate || !endDate }
-  );
+  useEffect(() => {
+    if (!startDate || !endDate) return;
+    if (showSalesInvoicesModal || showAllReceiptsModal) fetchSalesInvoicesModal(rangeParams);
+  }, [showSalesInvoicesModal, showAllReceiptsModal, startDate, endDate, fetchSalesInvoicesModal]);
 
-  // Bank Receipts data - use all: true to fetch all records in date range for accurate totals
-  const { data: bankReceiptsData, isLoading: bankReceiptsLoading } = useGetBankReceiptsQuery(
-    { dateFrom: startDate, dateTo: endDate, all: true },
-    { skip: !startDate || !endDate }
-  );
+  useEffect(() => {
+    if (!startDate || !endDate) return;
+    if (showPurchaseInvoicesModal) fetchPurchaseInvoicesModal(rangeParams);
+  }, [showPurchaseInvoicesModal, startDate, endDate, fetchPurchaseInvoicesModal]);
 
-  // Bank Payments data - use all: true to fetch all records in date range for accurate totals
-  const { data: bankPaymentsData, isLoading: bankPaymentsLoading } = useGetBankPaymentsQuery(
-    { dateFrom: startDate, dateTo: endDate, all: true },
-    { skip: !startDate || !endDate }
-  );
+  useEffect(() => {
+    if (!startDate || !endDate) return;
+    if (showCashReceiptsModal || showAllReceiptsModal) fetchCashReceiptsModal(rangeParams);
+  }, [showCashReceiptsModal, showAllReceiptsModal, startDate, endDate, fetchCashReceiptsModal]);
+
+  useEffect(() => {
+    if (!startDate || !endDate) return;
+    if (showCashPaymentsModal || showAllPaymentsModal) fetchCashPaymentsModal(rangeParams);
+  }, [showCashPaymentsModal, showAllPaymentsModal, startDate, endDate, fetchCashPaymentsModal]);
+
+  useEffect(() => {
+    if (!startDate || !endDate) return;
+    if (showBankReceiptsModal || showAllReceiptsModal) fetchBankReceiptsModal(rangeParams);
+  }, [showBankReceiptsModal, showAllReceiptsModal, startDate, endDate, fetchBankReceiptsModal]);
+
+  useEffect(() => {
+    if (!startDate || !endDate) return;
+    if (showBankPaymentsModal || showAllPaymentsModal) fetchBankPaymentsModal(rangeParams);
+  }, [showBankPaymentsModal, showAllPaymentsModal, startDate, endDate, fetchBankPaymentsModal]);
 
   const { data: recurringExpensesData, isLoading: recurringExpensesLoading } = useGetUpcomingExpensesQuery(
     { days: 14 },
-    { pollingInterval: 60000 }
+    { pollingInterval: 120000 }
   );
 
   const { data: plSummaryData } = useGetSummaryQuery(
@@ -253,10 +251,7 @@ export const Dashboard = () => {
   const { data: companySettingsData } = useGetCompanySettingsQuery();
   const { data: companyData } = useFetchCompanyQuery();
 
-  if (summaryLoading || lowStockLoading || inventoryLoading || customersLoading ||
-    salesOrdersLoading || pendingSalesOrdersLoading || purchaseOrdersLoading || pendingPurchaseOrdersLoading ||
-    salesInvoicesLoading || purchaseInvoicesLoading || cashReceiptsLoading ||
-    cashPaymentsLoading || bankReceiptsLoading || bankPaymentsLoading || recurringExpensesLoading) {
+  if (summaryLoading || lowStockLoading || inventoryLoading || customersLoading || rangeSummaryLoading || recurringExpensesLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
@@ -270,15 +265,33 @@ export const Dashboard = () => {
   const lowStockCount = lowStockData?.data?.products?.length || lowStockData?.products?.length || 0;
   const inventorySummary = inventoryData?.data?.summary ?? inventoryData?.data ?? inventoryData?.summary ?? {};
 
-  const activeCustomersCount = customersData?.data?.customers?.length || customersData?.customers?.length || 0;
+  const customersPagination = customersData?.pagination ?? customersData?.data?.pagination;
+  const activeCustomersCount =
+    customersPagination?.total ??
+    customersData?.data?.customers?.length ??
+    customersData?.customers?.length ??
+    0;
 
-  // Extract counts from API responses
-  const pendingSalesOrdersCount = pendingSalesOrdersData?.data?.salesOrders?.length || pendingSalesOrdersData?.salesOrders?.length || 0;
-  const pendingPurchaseOrdersCount = pendingPurchaseOrdersData?.data?.purchaseOrders?.length || pendingPurchaseOrdersData?.purchaseOrders?.length || 0;
-  const cashReceiptsCount = cashReceiptsData?.data?.cashReceipts?.length || 0;
-  const cashPaymentsCount = cashPaymentsData?.data?.cashPayments?.length || 0;
-  const bankReceiptsCount = bankReceiptsData?.data?.bankReceipts?.length || 0;
-  const bankPaymentsCount = bankPaymentsData?.data?.bankPayments?.length || 0;
+  const agg = rangeSummaryRes?.data ?? rangeSummaryRes ?? {};
+
+  const pickList = (payload, keys) => {
+    if (!payload) return [];
+    const inner = payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
+      ? payload.data
+      : payload;
+    for (const k of keys) {
+      const v = inner[k];
+      if (Array.isArray(v)) return v;
+    }
+    return [];
+  };
+
+  const pendingSalesOrdersCount = agg.pendingSalesOrdersCount ?? 0;
+  const pendingPurchaseOrdersCount = agg.pendingPurchaseOrdersCount ?? 0;
+  const cashReceiptsCount = agg.cashReceipts?.count ?? 0;
+  const cashPaymentsCount = agg.cashPayments?.count ?? 0;
+  const bankReceiptsCount = agg.bankReceipts?.count ?? 0;
+  const bankPaymentsCount = agg.bankPayments?.count ?? 0;
 
   const upcomingRecurringExpenses = recurringExpensesData?.data || recurringExpensesData?.expenses || [];
 
@@ -312,67 +325,23 @@ export const Dashboard = () => {
     return 'General Expense';
   };
 
-  // Calculate totals for financial metrics
-  // RTK Query wraps axios response in 'data', so structure is: { data: { salesOrders: [...], pagination: {...} } }
-  // Sales Orders use `total` directly, not `pricing.total`
-  const salesOrdersArray = salesOrdersData?.data?.salesOrders || salesOrdersData?.salesOrders || [];
-  const salesOrdersTotal = salesOrdersArray.reduce((sum, order) => {
-    const orderTotal = order.total || order.pricing?.total || 0;
-    return sum + Number(orderTotal);
-  }, 0);
+  const salesOrdersTotal = Number(agg.salesOrdersInRange?.sumTotal) || 0;
+  const purchaseOrdersTotal = Number(agg.purchaseOrdersInRange?.sumTotal) || 0;
+  const salesInvoicesTotal = Number(agg.salesInvoicesInRange?.sumTotal) || 0;
+  const salesInvoicesCOGS = Number(agg.salesInvoicesInRange?.sumCogs) || 0;
+  const purchaseInvoicesTotal = Number(agg.purchaseInvoicesInRange?.sumTotal) || 0;
 
-  const purchaseOrdersTotal = (purchaseOrdersData?.data?.purchaseOrders || purchaseOrdersData?.purchaseOrders || []).reduce((sum, order) => {
-    return sum + Number(order.pricing?.total || order.total || 0);
-  }, 0);
+  const cashReceiptsTotal = Number(agg.cashReceipts?.sumAmount) || 0;
+  const cashPaymentsTotal = Number(agg.cashPayments?.sumAmount) || 0;
+  const bankReceiptsTotal = Number(agg.bankReceipts?.sumAmount) || 0;
+  const bankPaymentsTotal = Number(agg.bankPayments?.sumAmount) || 0;
 
-  // Sales Invoices (from Sales/POS page) - use `pricing.total`
-  // RTK Query wraps axios response in 'data', so structure is: { data: { orders: [...], pagination: {...} } }
-  // Also handle direct response structure (no data wrapper)
-  const salesInvoicesArray = salesInvoicesData?.data?.orders || salesInvoicesData?.orders || [];
-  const salesInvoicesTotal = salesInvoicesArray.reduce((sum, order) => {
-    const orderTotal = order.pricing?.total || order.total || 0;
-    return sum + Number(orderTotal);
-  }, 0);
-
-  // COGS for sales invoices (from items: quantity * unitCost/cost_price)
-  const salesInvoicesCOGS = salesInvoicesArray.reduce((sum, order) => {
-    const items = Array.isArray(order.items) ? order.items : (typeof order.items === 'string' ? (() => { try { return JSON.parse(order.items || '[]'); } catch { return []; } })() : []);
-    const orderCOGS = items.reduce((s, it) => {
-      const qty = Number(it.quantity) || 0;
-      const cost = Number(it.unitCost ?? it.cost_price ?? it.costPrice ?? 0);
-      return s + qty * cost;
-    }, 0);
-    return sum + orderCOGS;
-  }, 0);
-
-  // Purchase Invoices (from Purchase page)
-  const purchaseInvoicesTotal = purchaseInvoicesData?.data?.invoices?.reduce((sum, invoice) => sum + (invoice.pricing?.total || 0), 0) ||
-    purchaseInvoicesData?.invoices?.reduce((sum, invoice) => sum + (invoice.pricing?.total || 0), 0) || 0;
-
-  // Safely calculate totals with proper number conversion and NaN handling
-  const cashReceiptsArray = cashReceiptsData?.data?.cashReceipts || [];
-  const cashReceiptsTotal = cashReceiptsArray.reduce((sum, receipt) => {
-    const amount = Number(receipt?.amount) || 0;
-    return sum + (isNaN(amount) ? 0 : amount);
-  }, 0);
-
-  const cashPaymentsArray = cashPaymentsData?.data?.cashPayments || [];
-  const cashPaymentsTotal = cashPaymentsArray.reduce((sum, payment) => {
-    const amount = Number(payment?.amount) || 0;
-    return sum + (isNaN(amount) ? 0 : amount);
-  }, 0);
-
-  const bankReceiptsArray = bankReceiptsData?.data?.bankReceipts || [];
-  const bankReceiptsTotal = bankReceiptsArray.reduce((sum, receipt) => {
-    const amount = Number(receipt?.amount) || 0;
-    return sum + (isNaN(amount) ? 0 : amount);
-  }, 0);
-
-  const bankPaymentsArray = bankPaymentsData?.data?.bankPayments || [];
-  const bankPaymentsTotal = bankPaymentsArray.reduce((sum, payment) => {
-    const amount = Number(payment?.amount) || 0;
-    return sum + (isNaN(amount) ? 0 : amount);
-  }, 0);
+  const cashReceiptsArray = pickList(crModalState.data, ['cashReceipts']);
+  const cashPaymentsArray = pickList(cpModalState.data, ['cashPayments']);
+  const bankReceiptsArray = pickList(brModalState.data, ['bankReceipts']);
+  const bankPaymentsArray = pickList(bpModalState.data, ['bankPayments']);
+  const salesInvoicesArray = pickList(siModalState.data, ['orders']);
+  const salesOrdersArray = pickList(soModalState.data, ['salesOrders']);
 
   // Calculate total sales (Sales Orders + Sales Invoices)
   const totalSales = salesOrdersTotal + salesInvoicesTotal;
@@ -380,10 +349,8 @@ export const Dashboard = () => {
   // Calculate total purchases (Purchase Orders + Purchase Invoices) - COGS
   const totalPurchases = purchaseOrdersTotal + purchaseInvoicesTotal;
 
-  // Calculate total discounts from sales orders and sales invoices
-  const salesOrdersDiscounts = salesOrdersData?.data?.salesOrders?.reduce((sum, order) => sum + (order.pricing?.discountAmount || 0), 0) || 0;
-  const salesInvoicesDiscounts = salesInvoicesData?.data?.orders?.reduce((sum, order) => sum + (order.discountAmount || 0), 0) ||
-    salesInvoicesData?.orders?.reduce((sum, order) => sum + (order.discountAmount || 0), 0) || 0;
+  const salesOrdersDiscounts = Number(agg.salesOrdersInRange?.sumDiscount) || 0;
+  const salesInvoicesDiscounts = Number(agg.salesInvoicesInRange?.sumDiscount) || 0;
   const totalDiscounts = salesOrdersDiscounts + salesInvoicesDiscounts;
 
   // Sales Returns from P&L (account 4100)
@@ -396,33 +363,14 @@ export const Dashboard = () => {
   // Total Sale Net Profit = Total Revenue - COGS (matches P&L; must subtract returns before COGS)
   const salesInvoicesNetProfit = totalRevenue - salesInvoicesCOGS;
 
-  // Separate Cash/Bank Payments into Supplier Payments vs Operating Expenses
-  // Operating expenses are payments that don't have a supplier or customer (general expenses)
-  const cashOperatingExpenses = cashPaymentsArray
-    .filter(payment => !payment?.supplier && !payment?.customer)
-    .reduce((sum, payment) => {
-      const amount = Number(payment?.amount) || 0;
-      return sum + (isNaN(amount) ? 0 : amount);
-    }, 0);
-
-  const bankOperatingExpenses = bankPaymentsArray
-    .filter(payment => !payment?.supplier && !payment?.customer)
-    .reduce((sum, payment) => {
-      const amount = Number(payment?.amount) || 0;
-      return sum + (isNaN(amount) ? 0 : amount);
-    }, 0);
-
-  const operatingExpenses = cashOperatingExpenses + bankOperatingExpenses;
+  const operatingExpenses =
+    (Number(agg.cashPayments?.sumOperating) || 0) + (Number(agg.bankPayments?.sumOperating) || 0);
 
   const totalCashPayments = cashPaymentsTotal;
   const totalBankPayments = bankPaymentsTotal;
   const totalPayments = totalCashPayments + totalBankPayments; // Includes both supplier payments and expenses
 
-  // Calculate payments received from Sales Invoices (amount_paid field)
-  const salesInvoicePayments = salesInvoicesArray.reduce((sum, order) => {
-    const amountPaid = Number(order.amount_paid || order.amountPaid || 0);
-    return sum + (isNaN(amountPaid) ? 0 : amountPaid);
-  }, 0);
+  const salesInvoicePayments = Number(agg.salesInvoicesInRange?.sumAmountPaid) || 0;
 
   // Cash Flow Calculations
   const totalCashReceipts = cashReceiptsTotal;
@@ -534,14 +482,13 @@ export const Dashboard = () => {
     { key: 'amount', label: 'Amount', sortable: true, format: 'currency' }
   ];
 
-  // Prepare data arrays for modals
+  const purchaseInvoicesDataArray = pickList(piModalState.data, ['invoices']);
   const salesOrdersModalData = salesOrdersArray;
-  const purchaseOrdersModalData = purchaseOrdersData?.data?.purchaseOrders || purchaseOrdersData?.purchaseOrders || [];
+  const purchaseOrdersModalData = pickList(poModalState.data, ['purchaseOrders']);
   const salesInvoicesModalData = salesInvoicesArray;
-  const purchaseInvoicesDataArray = purchaseInvoicesData?.data?.invoices || purchaseInvoicesData?.invoices || [];
   const cashReceiptsDataArray = cashReceiptsArray;
   const cashPaymentsDataArray = cashPaymentsArray;
-  const bankReceiptsDataArray = bankReceiptsData?.data?.bankReceipts || [];
+  const bankReceiptsDataArray = bankReceiptsArray;
   const bankPaymentsDataArray = bankPaymentsArray;
 
   // Combined receipts and payments data (cash + bank + sales invoice payments)
@@ -570,10 +517,14 @@ export const Dashboard = () => {
     ...bankPaymentsArray.map(p => ({ ...p, paymentType: 'Bank' }))
   ].sort((a, b) => new Date(b.date) - new Date(a.date));
 
-  const companyInfo = companySettingsData?.data || {};
+  const companyInfo = companySettingsData?.data?.data ?? companySettingsData?.data ?? {};
   const companyFromApi = companyData?.data || companyData || {};
   const companyLogo = companyFromApi.logo || companyInfo.logo;
   const companyName = companyInfo.companyName || companyInfo.businessName || companyFromApi.companyName || '';
+  const dashboardLogoSizeRaw = Number(companyInfo?.orderSettings?.dashboardLogoSize);
+  const dashboardLogoSize = Number.isFinite(dashboardLogoSizeRaw)
+    ? Math.min(900, Math.max(120, dashboardLogoSizeRaw))
+    : 500;
 
   return (
     <div className="space-y-4 sm:space-y-6 px-2 sm:px-0">
@@ -648,7 +599,8 @@ export const Dashboard = () => {
                 src={companyLogo}
                 alt={companyName || 'Company logo'}
                 crossOrigin="anonymous"
-                className="max-h-[400px] md:max-h-[500px] w-auto max-w-full object-contain transition-all duration-500 hover:scale-105"
+                className="w-auto max-w-full object-contain transition-all duration-500 hover:scale-105"
+                style={{ height: `${dashboardLogoSize}px` }}
               />
             ) : (
               <div className="w-60 h-60 rounded-2xl bg-gray-100 flex items-center justify-center">
@@ -663,627 +615,627 @@ export const Dashboard = () => {
       ) : (
         <>
 
-      {upcomingRecurringExpenses.length > 0 && (
-        <div className="card">
-          <div className="card-header flex items-center justify-between">
-            <div>
-              <h2 className="text-base sm:text-lg font-medium text-gray-900 flex items-center space-x-2">
-                <Bell className="h-4 w-4 sm:h-5 sm:w-5 text-primary-600" />
-                <span>Upcoming Monthly Obligations</span>
-              </h2>
-              <p className="text-xs sm:text-sm text-gray-600">
-                Stay ahead of salaries, rent, and other committed expenses.
-              </p>
-            </div>
-          </div>
-          <div className="card-content">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
-              {upcomingRecurringExpenses.slice(0, 4).map((expense) => {
-                const daysLeft = calculateDaysUntilDue(expense.nextDueDate);
-                const isOverdue = typeof daysLeft === 'number' && daysLeft < 0;
-                return (
-                  <div
-                    key={expense._id}
-                    className={`border rounded-lg p-4 shadow-sm ${isOverdue ? 'border-danger-200 bg-danger-50/60' : 'border-gray-200 bg-white'
-                      }`}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                        {expense.defaultPaymentType === 'bank' ? 'Bank Payment' : 'Cash Payment'}
-                      </span>
-                    </div>
-                    <h3 className="text-base font-semibold text-gray-900">{expense.name}</h3>
-                    <p className="text-sm text-gray-600">{getRecurringPayeeName(expense)}</p>
-                    <p className="text-lg font-bold text-gray-900 mt-2">
-                      {formatCurrency(expense.amount)}
-                    </p>
-                    <div className="mt-2 text-sm text-gray-600 flex items-center space-x-2">
-                      <Calendar className="h-4 w-4 text-gray-400" />
-                      <span>Due {formatDate(expense.nextDueDate)}</span>
-                    </div>
-                    <div className="mt-2">
-                      <span
-                        className={`inline-flex items-center px-2 py-1 text-xs font-semibold rounded-full ${isOverdue
-                            ? 'bg-danger-100 text-danger-700'
-                            : 'bg-primary-100 text-primary-700'
+          {upcomingRecurringExpenses.length > 0 && (
+            <div className="card">
+              <div className="card-header flex items-center justify-between">
+                <div>
+                  <h2 className="text-base sm:text-lg font-medium text-gray-900 flex items-center space-x-2">
+                    <Bell className="h-4 w-4 sm:h-5 sm:w-5 text-primary-600" />
+                    <span>Upcoming Monthly Obligations</span>
+                  </h2>
+                  <p className="text-xs sm:text-sm text-gray-600">
+                    Stay ahead of salaries, rent, and other committed expenses.
+                  </p>
+                </div>
+              </div>
+              <div className="card-content">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
+                  {upcomingRecurringExpenses.slice(0, 4).map((expense) => {
+                    const daysLeft = calculateDaysUntilDue(expense.nextDueDate);
+                    const isOverdue = typeof daysLeft === 'number' && daysLeft < 0;
+                    return (
+                      <div
+                        key={expense._id}
+                        className={`border rounded-lg p-4 shadow-sm ${isOverdue ? 'border-danger-200 bg-danger-50/60' : 'border-gray-200 bg-white'
                           }`}
                       >
-                        {isOverdue ? `${Math.abs(daysLeft)} day(s) overdue` : `${daysLeft} day(s) left`}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            {upcomingRecurringExpenses.length > 4 && (
-              <p className="text-xs text-gray-500 mt-3">
-                Showing first 4 reminders. Review all recurring expenses from the Cash Payments page.
-              </p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Financial Dashboard */}
-      <div className="card">
-        <div className="card-header">
-          <div className="flex flex-col items-center space-y-2 sm:space-y-4">
-            <h2 className="text-sm sm:text-lg font-medium text-gray-900">Financial Overview</h2>
-            {/* Date Filter - Mobile only */}
-            <div className="flex flex-row items-center space-x-1.5 sm:space-x-4 w-full sm:w-auto lg:hidden">
-              <div className="w-full sm:w-auto">
-                <DateFilter
-                  startDate={startDate}
-                  endDate={endDate}
-                  onDateChange={handleDateChange}
-                  compact={true}
-                  showPresets={true}
-                  className="w-full"
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="card-content space-y-6">
-
-          {/* REVENUE, COST & DISCOUNT SECTION - Responsive scaling */}
-          <div>
-            <h3 className="text-[10px] sm:text-xs xl:text-sm font-semibold text-gray-700 mb-2 xl:mb-3 uppercase tracking-wide">Revenue, Cost & Discounts</h3>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-1.5 sm:gap-2 xl:gap-3 2xl:gap-4">
-
-              {/* Sales */}
-              <div
-                className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-300 transition-colors relative group shadow-sm min-w-0"
-                onClick={() => setShowSalesInvoicesModal(true)}
-              >
-                <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <Eye className="h-2.5 w-2.5 xl:h-3 xl:w-3 2xl:h-4 2xl:w-4 text-gray-600" />
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                            {expense.defaultPaymentType === 'bank' ? 'Bank Payment' : 'Cash Payment'}
+                          </span>
+                        </div>
+                        <h3 className="text-base font-semibold text-gray-900">{expense.name}</h3>
+                        <p className="text-sm text-gray-600">{getRecurringPayeeName(expense)}</p>
+                        <p className="text-lg font-bold text-gray-900 mt-2">
+                          {formatCurrency(expense.amount)}
+                        </p>
+                        <div className="mt-2 text-sm text-gray-600 flex items-center space-x-2">
+                          <Calendar className="h-4 w-4 text-gray-400" />
+                          <span>Due {formatDate(expense.nextDueDate)}</span>
+                        </div>
+                        <div className="mt-2">
+                          <span
+                            className={`inline-flex items-center px-2 py-1 text-xs font-semibold rounded-full ${isOverdue
+                              ? 'bg-danger-100 text-danger-700'
+                              : 'bg-primary-100 text-primary-700'
+                              }`}
+                          >
+                            {isOverdue ? `${Math.abs(daysLeft)} day(s) overdue` : `${daysLeft} day(s) left`}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
-                  <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-green-500 rounded-full">
-                    <CreditCard className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
-                  </div>
-                </div>
-                <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Sales (Revenue)</p>
-                <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">{Math.round(totalSales).toLocaleString()}</p>
-                <p className="text-[9px] sm:text-[10px] xl:text-xs text-gray-500 mt-0.5 hidden sm:block">SO: {Math.round(salesOrdersTotal)} | SI: {Math.round(salesInvoicesTotal)}</p>
-                <p className="text-[9px] sm:text-[10px] xl:text-xs text-primary-600 font-medium mt-0.5">Net: {Math.round(netRevenue).toLocaleString()}</p>
-              </div>
-
-              {/* Purchase (COGS) */}
-              <div
-                className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-300 transition-colors relative group shadow-sm min-w-0"
-                onClick={() => setShowPurchaseInvoicesModal(true)}
-              >
-                <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <Eye className="h-2.5 w-2.5 xl:h-3 xl:w-3 2xl:h-4 2xl:w-4 text-gray-600" />
-                </div>
-                <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
-                  <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-purple-500 rounded-full">
-                    <Truck className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
-                  </div>
-                </div>
-                <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Purchase (COGS)</p>
-                <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">{Math.round(totalPurchases).toLocaleString()}</p>
-                <p className="text-[9px] sm:text-[10px] xl:text-xs text-gray-500 mt-0.5 hidden sm:block">PO: {Math.round(purchaseOrdersTotal)} | PI: {Math.round(purchaseInvoicesTotal)}</p>
-              </div>
-
-              {/* Discount */}
-              <div className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg shadow-sm min-w-0">
-                <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
-                  <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-red-500 rounded-full">
-                    <Tag className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
-                  </div>
-                </div>
-                <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Discount Given</p>
-                <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">{Math.round(totalDiscounts).toLocaleString()}</p>
-              </div>
-
-              {/* Pending Sales Orders */}
-              <div
-                className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-300 transition-colors shadow-sm min-w-0"
-                onClick={() => navigate('/sales-orders')}
-              >
-                <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
-                  <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-cyan-500 rounded-full">
-                    <FileText className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
-                  </div>
-                </div>
-                <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Pending Sales Orders</p>
-                <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">{pendingSalesOrdersCount}</p>
-              </div>
-
-              {/* Pending Purchase Orders */}
-              <div
-                className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-300 transition-colors shadow-sm min-w-0"
-                onClick={() => navigate('/purchase-orders')}
-              >
-                <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
-                  <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-indigo-500 rounded-full">
-                    <Receipt className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
-                  </div>
-                </div>
-                <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Pending Purchase Orders</p>
-                <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">{pendingPurchaseOrdersCount}</p>
-              </div>
-            </div>
-          </div>
-
-          {/* PROFITABILITY & CASH FLOW SECTION - Responsive scaling */}
-          <div>
-            <h3 className="text-[10px] sm:text-xs xl:text-sm font-semibold text-gray-700 mb-2 xl:mb-3 uppercase tracking-wide">Profitability & Cash Flow</h3>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-1.5 sm:gap-2 xl:gap-3 2xl:gap-4">
-
-              {/* Gross Profit */}
-              <div className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg shadow-sm min-w-0">
-                <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
-                  <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-blue-500 rounded-full">
-                    <BarChart3 className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
-                  </div>
-                </div>
-                <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Gross Profit</p>
-                <p className={`text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold break-words ${grossProfit >= 0 ? 'text-gray-900' : 'text-red-600'}`}>
-                  {Math.round(grossProfit).toLocaleString()}
-                </p>
-                <p className="text-[9px] sm:text-[10px] xl:text-xs text-gray-500 mt-0.5 hidden sm:block">Revenue - COGS</p>
-              </div>
-
-              {/* Total Receipts */}
-              <div
-                className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-300 transition-colors relative group shadow-sm min-w-0"
-                onClick={() => setShowAllReceiptsModal(true)}
-              >
-                <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <Eye className="h-2.5 w-2.5 xl:h-3 xl:w-3 2xl:h-4 2xl:w-4 text-gray-600" />
-                </div>
-                <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
-                  <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-emerald-500 rounded-full">
-                    <Receipt className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
-                  </div>
-                </div>
-                <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Total Receipts</p>
-                <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">
-                  {isNaN(totalReceipts) ? '0' : Math.round(totalReceipts).toLocaleString()}
-                </p>
-                <p className="text-[9px] sm:text-[10px] xl:text-xs text-gray-500 mt-0.5 hidden sm:block">
-                  Cash: {isNaN(totalCashReceipts) ? '0' : Math.round(totalCashReceipts)} | Bank: {isNaN(totalBankReceipts) ? '0' : Math.round(totalBankReceipts)} | Sales: {isNaN(salesInvoicePayments) ? '0' : Math.round(salesInvoicePayments)}
-                </p>
-              </div>
-
-              {/* Total Payments */}
-              <div
-                className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-300 transition-colors relative group shadow-sm min-w-0"
-                onClick={() => setShowAllPaymentsModal(true)}
-              >
-                <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <Eye className="h-2.5 w-2.5 xl:h-3 xl:w-3 2xl:h-4 2xl:w-4 text-gray-600" />
-                </div>
-                <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
-                  <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-orange-500 rounded-full">
-                    <Banknote className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
-                  </div>
-                </div>
-                <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Total Payments</p>
-                <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">
-                  {isNaN(totalPayments) ? '0' : Math.round(totalPayments).toLocaleString()}
-                </p>
-                <p className="text-[9px] sm:text-[10px] xl:text-xs text-gray-500 mt-0.5 hidden sm:block">
-                  Cash: {isNaN(totalCashPayments) ? '0' : Math.round(totalCashPayments)} | Bank: {isNaN(totalBankPayments) ? '0' : Math.round(totalBankPayments)}
-                </p>
-              </div>
-
-              {/* Net Cash Flow */}
-              <div className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg shadow-sm min-w-0">
-                <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
-                  <div className={`p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 rounded-full ${netCashFlow >= 0 ? 'bg-green-500' : 'bg-red-500'}`}>
-                    <Wallet className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
-                  </div>
-                </div>
-                <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Net Cash Flow</p>
-                <p className={`text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold break-words ${(isNaN(netCashFlow) ? 0 : netCashFlow) >= 0 ? 'text-gray-900' : 'text-red-600'}`}>
-                  {isNaN(netCashFlow) ? '0' : Math.round(netCashFlow).toLocaleString()}
-                </p>
-                <p className="text-[9px] sm:text-[10px] xl:text-xs text-gray-500 mt-0.5 hidden sm:block">Receipts - Payments</p>
-              </div>
-
-              {/* Total Orders */}
-              <div className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg shadow-sm min-w-0">
-                <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
-                  <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-yellow-500 rounded-full">
-                    <ShoppingCart className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
-                  </div>
-                </div>
-                <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Total Transactions</p>
-                <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">{summary.totalOrders || 0}</p>
-              </div>
-
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Stats Grid - Single Row */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4 md:gap-5">
-        <StatCard
-          title="Today's Revenue"
-          value={`${summary.totalRevenue?.toFixed(2) || '0.00'}`}
-          icon={TrendingUp}
-          color="bg-success-500"
-          change="12%"
-          changeType="positive"
-        />
-        <StatCard
-          title="Orders Today"
-          value={summary.totalOrders || 0}
-          icon={ShoppingCart}
-          color="bg-primary-500"
-          change="8%"
-          changeType="positive"
-        />
-        <StatCard
-          title="Total Products"
-          value={inventorySummary.totalProducts || 0}
-          icon={Package}
-          color="bg-warning-500"
-        />
-        <StatCard
-          title="Active Customers"
-          value={activeCustomersCount.toLocaleString()}
-          icon={Users}
-          color="bg-purple-500"
-          change="5%"
-          changeType="positive"
-        />
-        <StatCard
-          title="Items Sold Today"
-          value={summary.totalItems || 0}
-          icon={TrendingUp}
-          color="bg-blue-500"
-        />
-        <StatCard
-          title="Average Order Value"
-          value={`${summary.averageOrderValue?.toFixed(2) || '0.00'}`}
-          icon={BarChart3}
-          color="bg-indigo-500"
-        />
-        <StatCard
-          title="Low Stock Items"
-          value={lowStockCount}
-          icon={AlertTriangle}
-          color="bg-danger-500"
-        />
-      </div>
-
-      {/* Period Comparison Section – graphs & cards */}
-      <div className="card">
-        <div className="card-content pt-4">
-          <PeriodComparisonSection
-            title="Sales Performance Comparison"
-            metrics={[
-          {
-            title: 'Total Revenue',
-            fetchFunction: (params) => fetchPeriodSummary(params).then(res => ({
-              data: res.data?.data?.totalRevenue || 0
-            })),
-            format: 'currency',
-            icon: TrendingUp,
-            iconColor: 'bg-green-500'
-          },
-          {
-            title: 'Total Orders',
-            fetchFunction: (params) => fetchPeriodSummary(params).then(res => ({
-              data: res.data?.data?.totalOrders || 0
-            })),
-            format: 'number',
-            icon: ShoppingCart,
-            iconColor: 'bg-blue-500'
-          },
-          {
-            title: 'Average Order Value',
-            fetchFunction: (params) => fetchPeriodSummary(params).then(res => ({
-              data: res.data?.data?.averageOrderValue || 0
-            })),
-            format: 'currency',
-            icon: TrendingUp,
-            iconColor: 'bg-purple-500'
-          },
-          {
-            title: 'Total Items Sold',
-            fetchFunction: (params) => fetchPeriodSummary(params).then(res => ({
-              data: res.data?.data?.totalItems || 0
-            })),
-            format: 'number',
-            icon: Package,
-            iconColor: 'bg-orange-500'
-          }
-        ]}
-            fetchFunction={fetchPeriodSummary}
-          />
-        </div>
-      </div>
-
-      {/* Quick Actions */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
-        {/* Recent Orders */}
-        <div className="card">
-          <div className="card-header">
-            <h3 className="text-base sm:text-lg font-medium text-gray-900">Today's Orders</h3>
-          </div>
-          <div className="card-content">
-            {summary.orderTypes ? (
-              <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Retail Orders</span>
-                  <span className="font-medium">{summary.orderTypes.retail || 0}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Wholesale Orders</span>
-                  <span className="font-medium">{summary.orderTypes.wholesale || 0}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Returns</span>
-                  <span className="font-medium">{summary.orderTypes.return || 0}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Exchanges</span>
-                  <span className="font-medium">{summary.orderTypes.exchange || 0}</span>
-                </div>
-              </div>
-            ) : (
-              <p className="text-gray-500">No orders today</p>
-            )}
-          </div>
-        </div>
-
-        {/* Low Stock Alert */}
-        <div className="card">
-          <div className="card-header">
-            <h3 className="text-base sm:text-lg font-medium text-gray-900">Low Stock Alert</h3>
-          </div>
-          <div className="card-content">
-            {lowStockCount > 0 ? (
-              <div className="space-y-2">
-                <p className="text-sm text-gray-600">
-                  {lowStockCount} products are running low on stock
-                </p>
-                <div className="space-y-1">
-                  {lowStockData?.data?.products?.slice(0, 3).map((product) => (
-                    <div key={product._id} className="flex justify-between items-center text-sm">
-                      <span className="truncate">{product.name}</span>
-                      <span className="text-danger-600 font-medium">
-                        {product.inventory.currentStock} left
-                      </span>
-                    </div>
-                  ))}
-                </div>
-                {lowStockCount > 3 && (
-                  <p className="text-xs text-gray-500">
-                    And {lowStockCount - 3} more...
+                {upcomingRecurringExpenses.length > 4 && (
+                  <p className="text-xs text-gray-500 mt-3">
+                    Showing first 4 reminders. Review all recurring expenses from the Cash Payments page.
                   </p>
                 )}
               </div>
-            ) : (
-              <p className="text-success-600">All products are well stocked!</p>
-            )}
-          </div>
-        </div>
-      </div>
+            </div>
+          )}
 
-      {/* Payment Methods */}
-      {summary.paymentMethods && (
-        <div className="card">
-          <div className="card-header">
-            <h3 className="text-base sm:text-lg font-medium text-gray-900">Payment Methods Today</h3>
-          </div>
-          <div className="card-content">
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
-              {Object.entries(summary.paymentMethods).map(([method, count]) => (
-                <div key={method} className="text-center">
-                  <p className="text-2xl font-semibold text-gray-900">{count}</p>
-                  <p className="text-sm text-gray-600 capitalize">
-                    {method.replace('_', ' ')}
-                  </p>
+          {/* Financial Dashboard */}
+          <div className="card">
+            <div className="card-header">
+              <div className="flex flex-col items-center space-y-2 sm:space-y-4">
+                <h2 className="text-sm sm:text-lg font-medium text-gray-900">Financial Overview</h2>
+                {/* Date Filter - Mobile only */}
+                <div className="flex flex-row items-center space-x-1.5 sm:space-x-4 w-full sm:w-auto lg:hidden">
+                  <div className="w-full sm:w-auto">
+                    <DateFilter
+                      startDate={startDate}
+                      endDate={endDate}
+                      onDateChange={handleDateChange}
+                      compact={true}
+                      showPresets={true}
+                      className="w-full"
+                    />
+                  </div>
                 </div>
-              ))}
+              </div>
+            </div>
+            <div className="card-content space-y-6">
+
+              {/* REVENUE, COST & DISCOUNT SECTION - Responsive scaling */}
+              <div>
+                <h3 className="text-[10px] sm:text-xs xl:text-sm font-semibold text-gray-700 mb-2 xl:mb-3 uppercase tracking-wide">Revenue, Cost & Discounts</h3>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-1.5 sm:gap-2 xl:gap-3 2xl:gap-4">
+
+                  {/* Sales */}
+                  <div
+                    className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-300 transition-colors relative group shadow-sm min-w-0"
+                    onClick={() => setShowSalesInvoicesModal(true)}
+                  >
+                    <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Eye className="h-2.5 w-2.5 xl:h-3 xl:w-3 2xl:h-4 2xl:w-4 text-gray-600" />
+                    </div>
+                    <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
+                      <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-green-500 rounded-full">
+                        <CreditCard className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
+                      </div>
+                    </div>
+                    <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Sales (Revenue)</p>
+                    <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">{Math.round(totalSales).toLocaleString()}</p>
+                    <p className="text-[9px] sm:text-[10px] xl:text-xs text-gray-500 mt-0.5 hidden sm:block">SO: {Math.round(salesOrdersTotal)} | SI: {Math.round(salesInvoicesTotal)}</p>
+                    <p className="text-[9px] sm:text-[10px] xl:text-xs text-primary-600 font-medium mt-0.5">Net: {Math.round(netRevenue).toLocaleString()}</p>
+                  </div>
+
+                  {/* Purchase (COGS) */}
+                  <div
+                    className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-300 transition-colors relative group shadow-sm min-w-0"
+                    onClick={() => setShowPurchaseInvoicesModal(true)}
+                  >
+                    <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Eye className="h-2.5 w-2.5 xl:h-3 xl:w-3 2xl:h-4 2xl:w-4 text-gray-600" />
+                    </div>
+                    <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
+                      <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-purple-500 rounded-full">
+                        <Truck className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
+                      </div>
+                    </div>
+                    <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Purchase (COGS)</p>
+                    <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">{Math.round(totalPurchases).toLocaleString()}</p>
+                    <p className="text-[9px] sm:text-[10px] xl:text-xs text-gray-500 mt-0.5 hidden sm:block">PO: {Math.round(purchaseOrdersTotal)} | PI: {Math.round(purchaseInvoicesTotal)}</p>
+                  </div>
+
+                  {/* Discount */}
+                  <div className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg shadow-sm min-w-0">
+                    <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
+                      <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-red-500 rounded-full">
+                        <Tag className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
+                      </div>
+                    </div>
+                    <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Discount Given</p>
+                    <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">{Math.round(totalDiscounts).toLocaleString()}</p>
+                  </div>
+
+                  {/* Pending Sales Orders */}
+                  <div
+                    className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-300 transition-colors shadow-sm min-w-0"
+                    onClick={() => navigate('/sales-orders')}
+                  >
+                    <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
+                      <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-cyan-500 rounded-full">
+                        <FileText className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
+                      </div>
+                    </div>
+                    <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Pending Sales Orders</p>
+                    <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">{pendingSalesOrdersCount}</p>
+                  </div>
+
+                  {/* Pending Purchase Orders */}
+                  <div
+                    className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-300 transition-colors shadow-sm min-w-0"
+                    onClick={() => navigate('/purchase-orders')}
+                  >
+                    <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
+                      <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-indigo-500 rounded-full">
+                        <Receipt className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
+                      </div>
+                    </div>
+                    <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Pending Purchase Orders</p>
+                    <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">{pendingPurchaseOrdersCount}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* PROFITABILITY & CASH FLOW SECTION - Responsive scaling */}
+              <div>
+                <h3 className="text-[10px] sm:text-xs xl:text-sm font-semibold text-gray-700 mb-2 xl:mb-3 uppercase tracking-wide">Profitability & Cash Flow</h3>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-1.5 sm:gap-2 xl:gap-3 2xl:gap-4">
+
+                  {/* Gross Profit */}
+                  <div className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg shadow-sm min-w-0">
+                    <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
+                      <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-blue-500 rounded-full">
+                        <BarChart3 className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
+                      </div>
+                    </div>
+                    <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Gross Profit</p>
+                    <p className={`text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold break-words ${grossProfit >= 0 ? 'text-gray-900' : 'text-red-600'}`}>
+                      {Math.round(grossProfit).toLocaleString()}
+                    </p>
+                    <p className="text-[9px] sm:text-[10px] xl:text-xs text-gray-500 mt-0.5 hidden sm:block">Revenue - COGS</p>
+                  </div>
+
+                  {/* Total Receipts */}
+                  <div
+                    className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-300 transition-colors relative group shadow-sm min-w-0"
+                    onClick={() => setShowAllReceiptsModal(true)}
+                  >
+                    <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Eye className="h-2.5 w-2.5 xl:h-3 xl:w-3 2xl:h-4 2xl:w-4 text-gray-600" />
+                    </div>
+                    <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
+                      <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-emerald-500 rounded-full">
+                        <Receipt className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
+                      </div>
+                    </div>
+                    <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Total Receipts</p>
+                    <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">
+                      {isNaN(totalReceipts) ? '0' : Math.round(totalReceipts).toLocaleString()}
+                    </p>
+                    <p className="text-[9px] sm:text-[10px] xl:text-xs text-gray-500 mt-0.5 hidden sm:block">
+                      Cash: {isNaN(totalCashReceipts) ? '0' : Math.round(totalCashReceipts)} | Bank: {isNaN(totalBankReceipts) ? '0' : Math.round(totalBankReceipts)} | Sales: {isNaN(salesInvoicePayments) ? '0' : Math.round(salesInvoicePayments)}
+                    </p>
+                  </div>
+
+                  {/* Total Payments */}
+                  <div
+                    className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-300 transition-colors relative group shadow-sm min-w-0"
+                    onClick={() => setShowAllPaymentsModal(true)}
+                  >
+                    <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Eye className="h-2.5 w-2.5 xl:h-3 xl:w-3 2xl:h-4 2xl:w-4 text-gray-600" />
+                    </div>
+                    <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
+                      <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-orange-500 rounded-full">
+                        <Banknote className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
+                      </div>
+                    </div>
+                    <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Total Payments</p>
+                    <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">
+                      {isNaN(totalPayments) ? '0' : Math.round(totalPayments).toLocaleString()}
+                    </p>
+                    <p className="text-[9px] sm:text-[10px] xl:text-xs text-gray-500 mt-0.5 hidden sm:block">
+                      Cash: {isNaN(totalCashPayments) ? '0' : Math.round(totalCashPayments)} | Bank: {isNaN(totalBankPayments) ? '0' : Math.round(totalBankPayments)}
+                    </p>
+                  </div>
+
+                  {/* Net Cash Flow */}
+                  <div className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg shadow-sm min-w-0">
+                    <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
+                      <div className={`p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 rounded-full ${netCashFlow >= 0 ? 'bg-green-500' : 'bg-red-500'}`}>
+                        <Wallet className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
+                      </div>
+                    </div>
+                    <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Net Cash Flow</p>
+                    <p className={`text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold break-words ${(isNaN(netCashFlow) ? 0 : netCashFlow) >= 0 ? 'text-gray-900' : 'text-red-600'}`}>
+                      {isNaN(netCashFlow) ? '0' : Math.round(netCashFlow).toLocaleString()}
+                    </p>
+                    <p className="text-[9px] sm:text-[10px] xl:text-xs text-gray-500 mt-0.5 hidden sm:block">Receipts - Payments</p>
+                  </div>
+
+                  {/* Total Orders */}
+                  <div className="text-center p-2 sm:p-2.5 xl:p-3 2xl:p-4 border border-gray-200 bg-white rounded-lg shadow-sm min-w-0">
+                    <div className="flex justify-center mb-1 sm:mb-1.5 xl:mb-2">
+                      <div className="p-1.5 sm:p-2 xl:p-2.5 2xl:p-3 bg-yellow-500 rounded-full">
+                        <ShoppingCart className="h-3.5 w-3.5 sm:h-4 sm:w-4 xl:h-5 xl:w-5 2xl:h-6 2xl:w-6 text-white" />
+                      </div>
+                    </div>
+                    <p className="text-[10px] sm:text-xs xl:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">Total Transactions</p>
+                    <p className="text-sm sm:text-base xl:text-lg 2xl:text-xl font-bold text-gray-900 break-words">{summary.totalOrders || 0}</p>
+                  </div>
+
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      )}
 
-      {/* Financial Metrics Legend */}
-      <div className="card bg-gray-50 border-gray-200">
-        <div className="card-content">
-          <h3 className="text-xs sm:text-sm font-semibold text-gray-900 mb-3">📊 Financial Metrics Explained</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3 text-xs text-gray-700">
-            <div><strong>Sales:</strong> Total revenue from Sales Orders + Sales Invoices</div>
-            <div><strong>Net Revenue:</strong> Sales minus discounts given</div>
-            <div><strong>Purchase (COGS):</strong> Cost of goods purchased from suppliers</div>
-            <div><strong>Gross Profit:</strong> Net Revenue - COGS (your margin)</div>
-            <div><strong>Receipts:</strong> Total money received (Cash Receipts + Bank Receipts + Sales Invoice Payments)</div>
-            <div><strong>Payments:</strong> Cash/Bank money paid (includes supplier payments + expenses)</div>
-            <div><strong>Net Cash Flow:</strong> Total receipts minus total payments (cash position)</div>
-            <div className="md:col-span-2 lg:col-span-3 mt-2 p-2 bg-yellow-100 border border-yellow-300 rounded">
-              <strong>⚠️ Note:</strong> Receipts/Payments may include both sales/purchases AND separate cash/bank transactions. For accurate accounting, check individual transaction pages.
+          {/* Stats Grid - Single Row */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4 md:gap-5">
+            <StatCard
+              title="Today's Revenue"
+              value={`${summary.totalRevenue?.toFixed(2) || '0.00'}`}
+              icon={TrendingUp}
+              color="bg-success-500"
+              change="12%"
+              changeType="positive"
+            />
+            <StatCard
+              title="Orders Today"
+              value={summary.totalOrders || 0}
+              icon={ShoppingCart}
+              color="bg-primary-500"
+              change="8%"
+              changeType="positive"
+            />
+            <StatCard
+              title="Total Products"
+              value={inventorySummary.totalProducts || 0}
+              icon={Package}
+              color="bg-warning-500"
+            />
+            <StatCard
+              title="Active Customers"
+              value={activeCustomersCount.toLocaleString()}
+              icon={Users}
+              color="bg-purple-500"
+              change="5%"
+              changeType="positive"
+            />
+            <StatCard
+              title="Items Sold Today"
+              value={summary.totalItems || 0}
+              icon={TrendingUp}
+              color="bg-blue-500"
+            />
+            <StatCard
+              title="Average Order Value"
+              value={`${summary.averageOrderValue?.toFixed(2) || '0.00'}`}
+              icon={BarChart3}
+              color="bg-indigo-500"
+            />
+            <StatCard
+              title="Low Stock Items"
+              value={lowStockCount}
+              icon={AlertTriangle}
+              color="bg-danger-500"
+            />
+          </div>
+
+          {/* Period Comparison Section – graphs & cards */}
+          <div className="card">
+            <div className="card-content pt-4">
+              <PeriodComparisonSection
+                title="Sales Performance Comparison"
+                metrics={[
+                  {
+                    title: 'Total Revenue',
+                    fetchFunction: (params) => fetchPeriodSummary(params).then(res => ({
+                      data: res.data?.data?.totalRevenue || 0
+                    })),
+                    format: 'currency',
+                    icon: TrendingUp,
+                    iconColor: 'bg-green-500'
+                  },
+                  {
+                    title: 'Total Orders',
+                    fetchFunction: (params) => fetchPeriodSummary(params).then(res => ({
+                      data: res.data?.data?.totalOrders || 0
+                    })),
+                    format: 'number',
+                    icon: ShoppingCart,
+                    iconColor: 'bg-blue-500'
+                  },
+                  {
+                    title: 'Average Order Value',
+                    fetchFunction: (params) => fetchPeriodSummary(params).then(res => ({
+                      data: res.data?.data?.averageOrderValue || 0
+                    })),
+                    format: 'currency',
+                    icon: TrendingUp,
+                    iconColor: 'bg-purple-500'
+                  },
+                  {
+                    title: 'Total Items Sold',
+                    fetchFunction: (params) => fetchPeriodSummary(params).then(res => ({
+                      data: res.data?.data?.totalItems || 0
+                    })),
+                    format: 'number',
+                    icon: Package,
+                    iconColor: 'bg-orange-500'
+                  }
+                ]}
+                fetchFunction={fetchPeriodSummary}
+              />
             </div>
           </div>
-        </div>
-      </div>
 
-      {/* Modals */}
-      <DashboardReportModal
-        isOpen={showSalesOrdersModal}
-        onClose={() => setShowSalesOrdersModal(false)}
-        title="Sales Orders"
-        columns={salesOrdersColumns}
-        data={salesOrdersModalData}
-        isLoading={salesOrdersLoading}
-        dateFrom={startDate}
-        dateTo={endDate}
-        onDateChange={(from, to) => {
-          setStartDate(from);
-          setEndDate(to);
-        }}
-      />
+          {/* Quick Actions */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+            {/* Recent Orders */}
+            <div className="card">
+              <div className="card-header">
+                <h3 className="text-base sm:text-lg font-medium text-gray-900">Today's Orders</h3>
+              </div>
+              <div className="card-content">
+                {summary.orderTypes ? (
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-gray-600">Retail Orders</span>
+                      <span className="font-medium">{summary.orderTypes.retail || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-gray-600">Wholesale Orders</span>
+                      <span className="font-medium">{summary.orderTypes.wholesale || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-gray-600">Returns</span>
+                      <span className="font-medium">{summary.orderTypes.return || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-gray-600">Exchanges</span>
+                      <span className="font-medium">{summary.orderTypes.exchange || 0}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-gray-500">No orders today</p>
+                )}
+              </div>
+            </div>
 
-      <DashboardReportModal
-        isOpen={showPurchaseOrdersModal}
-        onClose={() => setShowPurchaseOrdersModal(false)}
-        title="Purchase Orders"
-        columns={purchaseOrdersColumns}
-        data={purchaseOrdersModalData}
-        isLoading={purchaseOrdersLoading}
-        dateFrom={startDate}
-        dateTo={endDate}
-        onDateChange={(from, to) => {
-          setStartDate(from);
-          setEndDate(to);
-        }}
-      />
+            {/* Low Stock Alert */}
+            <div className="card">
+              <div className="card-header">
+                <h3 className="text-base sm:text-lg font-medium text-gray-900">Low Stock Alert</h3>
+              </div>
+              <div className="card-content">
+                {lowStockCount > 0 ? (
+                  <div className="space-y-2">
+                    <p className="text-sm text-gray-600">
+                      {lowStockCount} products are running low on stock
+                    </p>
+                    <div className="space-y-1">
+                      {lowStockData?.data?.products?.slice(0, 3).map((product) => (
+                        <div key={product._id} className="flex justify-between items-center text-sm">
+                          <span className="truncate">{product.name}</span>
+                          <span className="text-danger-600 font-medium">
+                            {product.inventory.currentStock} left
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    {lowStockCount > 3 && (
+                      <p className="text-xs text-gray-500">
+                        And {lowStockCount - 3} more...
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-success-600">All products are well stocked!</p>
+                )}
+              </div>
+            </div>
+          </div>
 
-      <DashboardReportModal
-        isOpen={showSalesInvoicesModal}
-        onClose={() => setShowSalesInvoicesModal(false)}
-        title="Sales Invoices"
-        columns={salesInvoicesColumns}
-        data={salesInvoicesModalData}
-        isLoading={salesInvoicesLoading}
-        dateFrom={startDate}
-        dateTo={endDate}
-        onDateChange={(from, to) => {
-          setStartDate(from);
-          setEndDate(to);
-        }}
-        summary={[
-          { label: 'Sales Revenue', value: salesRevenue },
-          { label: 'Sales Returns', value: totalSalesReturns },
-          { label: 'Net Total', value: totalSales - totalSalesReturns - totalDiscounts }
-        ]}
-      />
+          {/* Payment Methods */}
+          {summary.paymentMethods && (
+            <div className="card">
+              <div className="card-header">
+                <h3 className="text-base sm:text-lg font-medium text-gray-900">Payment Methods Today</h3>
+              </div>
+              <div className="card-content">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
+                  {Object.entries(summary.paymentMethods).map(([method, count]) => (
+                    <div key={method} className="text-center">
+                      <p className="text-2xl font-semibold text-gray-900">{count}</p>
+                      <p className="text-sm text-gray-600 capitalize">
+                        {method.replace('_', ' ')}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
-      <DashboardReportModal
-        isOpen={showPurchaseInvoicesModal}
-        onClose={() => setShowPurchaseInvoicesModal(false)}
-        title="Purchase Invoices"
-        columns={purchaseInvoicesColumns}
-        data={purchaseInvoicesDataArray}
-        isLoading={purchaseInvoicesLoading}
-        dateFrom={startDate}
-        dateTo={endDate}
-        onDateChange={(from, to) => {
-          setStartDate(from);
-          setEndDate(to);
-        }}
-      />
+          {/* Financial Metrics Legend */}
+          <div className="card bg-gray-50 border-gray-200">
+            <div className="card-content">
+              <h3 className="text-xs sm:text-sm font-semibold text-gray-900 mb-3">📊 Financial Metrics Explained</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3 text-xs text-gray-700">
+                <div><strong>Sales:</strong> Total revenue from Sales Orders + Sales Invoices</div>
+                <div><strong>Net Revenue:</strong> Sales minus discounts given</div>
+                <div><strong>Purchase (COGS):</strong> Cost of goods purchased from suppliers</div>
+                <div><strong>Gross Profit:</strong> Net Revenue - COGS (your margin)</div>
+                <div><strong>Receipts:</strong> Total money received (Cash Receipts + Bank Receipts + Sales Invoice Payments)</div>
+                <div><strong>Payments:</strong> Cash/Bank money paid (includes supplier payments + expenses)</div>
+                <div><strong>Net Cash Flow:</strong> Total receipts minus total payments (cash position)</div>
+                <div className="md:col-span-2 lg:col-span-3 mt-2 p-2 bg-yellow-100 border border-yellow-300 rounded">
+                  <strong>⚠️ Note:</strong> Receipts/Payments may include both sales/purchases AND separate cash/bank transactions. For accurate accounting, check individual transaction pages.
+                </div>
+              </div>
+            </div>
+          </div>
 
-      <DashboardReportModal
-        isOpen={showCashReceiptsModal}
-        onClose={() => setShowCashReceiptsModal(false)}
-        title="Cash Receipts"
-        columns={cashReceiptsColumns}
-        data={cashReceiptsDataArray}
-        isLoading={cashReceiptsLoading}
-        dateFrom={startDate}
-        dateTo={endDate}
-        onDateChange={(from, to) => {
-          setStartDate(from);
-          setEndDate(to);
-        }}
-      />
+          {/* Modals */}
+          <DashboardReportModal
+            isOpen={showSalesOrdersModal}
+            onClose={() => setShowSalesOrdersModal(false)}
+            title="Sales Orders"
+            columns={salesOrdersColumns}
+            data={salesOrdersModalData}
+            isLoading={soModalState.isFetching}
+            dateFrom={startDate}
+            dateTo={endDate}
+            onDateChange={(from, to) => {
+              setStartDate(from);
+              setEndDate(to);
+            }}
+          />
 
-      <DashboardReportModal
-        isOpen={showCashPaymentsModal}
-        onClose={() => setShowCashPaymentsModal(false)}
-        title="Cash Payments"
-        columns={cashPaymentsColumns}
-        data={cashPaymentsDataArray}
-        isLoading={cashPaymentsLoading}
-        dateFrom={startDate}
-        dateTo={endDate}
-        onDateChange={(from, to) => {
-          setStartDate(from);
-          setEndDate(to);
-        }}
-      />
+          <DashboardReportModal
+            isOpen={showPurchaseOrdersModal}
+            onClose={() => setShowPurchaseOrdersModal(false)}
+            title="Purchase Orders"
+            columns={purchaseOrdersColumns}
+            data={purchaseOrdersModalData}
+            isLoading={poModalState.isFetching}
+            dateFrom={startDate}
+            dateTo={endDate}
+            onDateChange={(from, to) => {
+              setStartDate(from);
+              setEndDate(to);
+            }}
+          />
 
-      <DashboardReportModal
-        isOpen={showBankReceiptsModal}
-        onClose={() => setShowBankReceiptsModal(false)}
-        title="Bank Receipts"
-        columns={bankReceiptsColumns}
-        data={bankReceiptsDataArray}
-        isLoading={bankReceiptsLoading}
-        dateFrom={startDate}
-        dateTo={endDate}
-        onDateChange={(from, to) => {
-          setStartDate(from);
-          setEndDate(to);
-        }}
-      />
+          <DashboardReportModal
+            isOpen={showSalesInvoicesModal}
+            onClose={() => setShowSalesInvoicesModal(false)}
+            title="Sales Invoices"
+            columns={salesInvoicesColumns}
+            data={salesInvoicesModalData}
+            isLoading={siModalState.isFetching}
+            dateFrom={startDate}
+            dateTo={endDate}
+            onDateChange={(from, to) => {
+              setStartDate(from);
+              setEndDate(to);
+            }}
+            summary={[
+              { label: 'Sales Revenue', value: salesRevenue },
+              { label: 'Sales Returns', value: totalSalesReturns },
+              { label: 'Net Total', value: totalSales - totalSalesReturns - totalDiscounts }
+            ]}
+          />
 
-      <DashboardReportModal
-        isOpen={showBankPaymentsModal}
-        onClose={() => setShowBankPaymentsModal(false)}
-        title="Bank Payments"
-        columns={bankPaymentsColumns}
-        data={bankPaymentsDataArray}
-        isLoading={bankPaymentsLoading}
-        dateFrom={startDate}
-        dateTo={endDate}
-        onDateChange={(from, to) => {
-          setStartDate(from);
-          setEndDate(to);
-        }}
-      />
+          <DashboardReportModal
+            isOpen={showPurchaseInvoicesModal}
+            onClose={() => setShowPurchaseInvoicesModal(false)}
+            title="Purchase Invoices"
+            columns={purchaseInvoicesColumns}
+            data={purchaseInvoicesDataArray}
+            isLoading={piModalState.isFetching}
+            dateFrom={startDate}
+            dateTo={endDate}
+            onDateChange={(from, to) => {
+              setStartDate(from);
+              setEndDate(to);
+            }}
+          />
 
-      <DashboardReportModal
-        isOpen={showAllReceiptsModal}
-        onClose={() => setShowAllReceiptsModal(false)}
-        title="All Receipts (Cash + Bank + Sales)"
-        columns={allReceiptsColumns}
-        data={allReceiptsDataArray}
-        isLoading={cashReceiptsLoading || bankReceiptsLoading || salesInvoicesLoading}
-        dateFrom={startDate}
-        dateTo={endDate}
-        onDateChange={(from, to) => {
-          setStartDate(from);
-          setEndDate(to);
-        }}
-      />
+          <DashboardReportModal
+            isOpen={showCashReceiptsModal}
+            onClose={() => setShowCashReceiptsModal(false)}
+            title="Cash Receipts"
+            columns={cashReceiptsColumns}
+            data={cashReceiptsDataArray}
+            isLoading={crModalState.isFetching}
+            dateFrom={startDate}
+            dateTo={endDate}
+            onDateChange={(from, to) => {
+              setStartDate(from);
+              setEndDate(to);
+            }}
+          />
 
-      <DashboardReportModal
-        isOpen={showAllPaymentsModal}
-        onClose={() => setShowAllPaymentsModal(false)}
-        title="All Payments (Cash + Bank)"
-        columns={allPaymentsColumns}
-        data={allPaymentsDataArray}
-        isLoading={cashPaymentsLoading || bankPaymentsLoading}
-        dateFrom={startDate}
-        dateTo={endDate}
-        onDateChange={(from, to) => {
-          setStartDate(from);
-          setEndDate(to);
-        }}
-      />
+          <DashboardReportModal
+            isOpen={showCashPaymentsModal}
+            onClose={() => setShowCashPaymentsModal(false)}
+            title="Cash Payments"
+            columns={cashPaymentsColumns}
+            data={cashPaymentsDataArray}
+            isLoading={cpModalState.isFetching}
+            dateFrom={startDate}
+            dateTo={endDate}
+            onDateChange={(from, to) => {
+              setStartDate(from);
+              setEndDate(to);
+            }}
+          />
+
+          <DashboardReportModal
+            isOpen={showBankReceiptsModal}
+            onClose={() => setShowBankReceiptsModal(false)}
+            title="Bank Receipts"
+            columns={bankReceiptsColumns}
+            data={bankReceiptsDataArray}
+            isLoading={brModalState.isFetching}
+            dateFrom={startDate}
+            dateTo={endDate}
+            onDateChange={(from, to) => {
+              setStartDate(from);
+              setEndDate(to);
+            }}
+          />
+
+          <DashboardReportModal
+            isOpen={showBankPaymentsModal}
+            onClose={() => setShowBankPaymentsModal(false)}
+            title="Bank Payments"
+            columns={bankPaymentsColumns}
+            data={bankPaymentsDataArray}
+            isLoading={bpModalState.isFetching}
+            dateFrom={startDate}
+            dateTo={endDate}
+            onDateChange={(from, to) => {
+              setStartDate(from);
+              setEndDate(to);
+            }}
+          />
+
+          <DashboardReportModal
+            isOpen={showAllReceiptsModal}
+            onClose={() => setShowAllReceiptsModal(false)}
+            title="All Receipts (Cash + Bank + Sales)"
+            columns={allReceiptsColumns}
+            data={allReceiptsDataArray}
+            isLoading={crModalState.isFetching || brModalState.isFetching || siModalState.isFetching}
+            dateFrom={startDate}
+            dateTo={endDate}
+            onDateChange={(from, to) => {
+              setStartDate(from);
+              setEndDate(to);
+            }}
+          />
+
+          <DashboardReportModal
+            isOpen={showAllPaymentsModal}
+            onClose={() => setShowAllPaymentsModal(false)}
+            title="All Payments (Cash + Bank)"
+            columns={allPaymentsColumns}
+            data={allPaymentsDataArray}
+            isLoading={cpModalState.isFetching || bpModalState.isFetching}
+            dateFrom={startDate}
+            dateTo={endDate}
+            onDateChange={(from, to) => {
+              setStartDate(from);
+              setEndDate(to);
+            }}
+          />
         </>
       )}
     </div>

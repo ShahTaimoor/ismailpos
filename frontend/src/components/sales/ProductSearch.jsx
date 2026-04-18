@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Camera } from 'lucide-react';
-import { useGetProductsQuery, useLazyGetLastPurchasePriceQuery } from '@/store/services/productsApi';
-import { useGetVariantsQuery } from '@/store/services/productVariantsApi';
-import { useFuzzySearch } from '@/hooks/useFuzzySearch';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useDispatch } from 'react-redux';
+import { Plus, Camera, X } from 'lucide-react';
+import { productsApi, useLazyGetLastPurchasePriceQuery } from '@/store/services/productsApi';
+import { productVariantsApi } from '@/store/services/productVariantsApi';
+import { useDebouncedPosProductSearch } from '@/hooks/useDebouncedPosProductSearch';
 import { SearchableDropdown } from '@/components/SearchableDropdown';
 import { DualUnitQuantityInput } from '@/components/DualUnitQuantityInput';
 import { hasDualUnit, getPiecesPerBox, piecesToBoxesAndPieces, formatStockDualLabel } from '@/utils/dualUnitUtils';
@@ -13,8 +14,10 @@ import { LoadingButton } from '@/components/LoadingSpinner';
 import BarcodeScanner from '@/components/BarcodeScanner';
 import BaseModal from '@/components/BaseModal';
 
-/** Max rows in the product search dropdown (type more to narrow results) */
-const PRODUCT_DROPDOWN_LIMIT = 20;
+/** Max rows shown in dropdown (server search caps higher; we slice in hook). */
+const PRODUCT_DROPDOWN_LIMIT = 50;
+/** Cap manual line images stored as data URLs on sales.items */
+const MAX_MANUAL_IMAGE_BYTES = 5 * 1024 * 1024;
 
 function ProductSearchComponent({
   onAddProduct,
@@ -45,8 +48,30 @@ function ProductSearchComponent({
   const [isManualMode, setIsManualMode] = useState(false); // New state for manual entry
   const [manualName, setManualName] = useState(''); // New state for manual name
   const [manualCost, setManualCost] = useState(''); // New state for manual cost
+  /** Data URL for optional photo on manual line items (stored on sale JSON). */
+  const [manualProductImage, setManualProductImage] = useState(null);
   const productSearchRef = useRef(null);
   const manualNameRef = useRef(null);
+  const manualImageInputRef = useRef(null);
+  const dispatch = useDispatch();
+
+  const [getLastPurchasePrice] = useLazyGetLastPurchasePriceQuery();
+
+  const {
+    items: products,
+    isLoading: productsLoading,
+    emptyMessage: emptySearchMessage,
+  } = useDebouncedPosProductSearch(productSearchTerm, { dropdownLimit: PRODUCT_DROPDOWN_LIMIT });
+
+  const refreshProductSearchCache = useCallback(() => {
+    dispatch(
+      productsApi.util.invalidateTags([
+        { type: 'Products', id: 'LIST' },
+        { type: 'Products', id: 'SEARCH' },
+      ])
+    );
+    dispatch(productVariantsApi.util.invalidateTags([{ type: 'Products', id: 'VARIANTS_LIST' }]));
+  }, [dispatch]);
 
   useEffect(() => {
     const handleConfigChange = () => {
@@ -56,92 +81,11 @@ function ProductSearchComponent({
     return () => window.removeEventListener('productImagesConfigChanged', handleConfigChange);
   }, []);
 
-  // Fetch all products (or a larger set) for client-side fuzzy search
-  const [getLastPurchasePrice] = useLazyGetLastPurchasePriceQuery();
-
-  const { data: productsData, isLoading: productsLoading, refetch: refetchProducts } = useGetProductsQuery(
-    { limit: 999999, status: 'active' },
-    {
-      keepPreviousData: true,
-      staleTime: 0, // Always consider data stale to get fresh stock levels
-      refetchOnMountOrArgChange: true, // Refetch when component mounts or params change
-    }
-  );
-
-  // Fetch all variants for search
-  const { data: variantsData, isLoading: variantsLoading } = useGetVariantsQuery(
-    { status: 'active' },
-    {
-      keepPreviousData: true,
-      staleTime: 0,
-      refetchOnMountOrArgChange: true,
-    }
-  );
-
-  // Expose refetch function to parent component via callback
   useEffect(() => {
-    if (onRefetchReady && refetchProducts && typeof refetchProducts === 'function') {
-      onRefetchReady(refetchProducts);
+    if (onRefetchReady && typeof onRefetchReady === 'function') {
+      onRefetchReady(refreshProductSearchCache);
     }
-  }, [onRefetchReady, refetchProducts]);
-
-  // Extract products array from RTK Query response
-  const allProducts = React.useMemo(() => {
-    if (!productsData) return [];
-    if (Array.isArray(productsData)) return productsData;
-    if (productsData?.data?.products) return productsData.data.products;
-    if (productsData?.products) return productsData.products;
-    if (productsData?.data?.data?.products) return productsData.data.data.products;
-    return [];
-  }, [productsData]);
-
-  // Extract variants array from RTK Query response
-  const allVariants = React.useMemo(() => {
-    if (!variantsData) return [];
-    if (Array.isArray(variantsData)) return variantsData;
-    if (variantsData?.data?.variants) return variantsData.data.variants;
-    if (variantsData?.variants) return variantsData.variants;
-    return [];
-  }, [variantsData]);
-
-  // Combine products and variants for search, marking variants with isVariant flag
-  const allItems = React.useMemo(() => {
-    const productsList = allProducts.map(p => ({ ...p, isVariant: false }));
-    const variantsList = allVariants
-      .filter(v => v.status === 'active')
-      .map(v => ({
-        ...v,
-        isVariant: true,
-        // Use variant's display name for search, but keep variant data
-        name: v.displayName || v.variantName || `${v.baseProduct?.name || ''} - ${v.variantValue || ''}`,
-        // Use variant pricing and inventory
-        pricing: v.pricing || { retail: 0, wholesale: 0, cost: 0 },
-        inventory: v.inventory || { currentStock: 0, reorderPoint: 0 },
-        // Keep reference to base product
-        baseProductId: v.baseProduct?._id || v.baseProduct,
-        baseProductName: v.baseProduct?.name || '',
-        variantType: v.variantType,
-        variantValue: v.variantValue,
-        variantName: v.variantName,
-      }));
-    return [...productsList, ...variantsList];
-  }, [allProducts, allVariants]);
-
-  const fuzzyFiltered = useFuzzySearch(
-    allItems,
-    productSearchTerm,
-    ['name', 'description', 'brand', 'displayName', 'variantValue', 'variantName'],
-    {
-      threshold: 0.4,
-      minScore: 0.3,
-      limit: PRODUCT_DROPDOWN_LIMIT,
-    }
-  );
-
-  const products = React.useMemo(() => {
-    if (!productSearchTerm?.trim()) return allItems.slice(0, PRODUCT_DROPDOWN_LIMIT);
-    return fuzzyFiltered;
-  }, [allItems, productSearchTerm, fuzzyFiltered]);
+  }, [onRefetchReady, refreshProductSearchCache]);
 
   const getCostPrice = (product) => {
     if (!product) return 0;
@@ -240,11 +184,33 @@ function ProductSearchComponent({
     // We only want to recalculate when priceType or selectedProduct changes.
   }, [priceType, selectedProduct]);
 
+  const handleManualImageFile = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please choose an image file');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > MAX_MANUAL_IMAGE_BYTES) {
+      toast.error('Image must be 5 MB or smaller');
+      e.target.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const r = reader.result;
+      setManualProductImage(typeof r === 'string' ? r : null);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  }, []);
+
   const handleAddToCart = async () => {
     if (isManualMode) {
       if (!manualName.trim()) {
         toast.error('Please enter a product name');
-        if (manualNameRef.current) manualNameRef.current.focus();
+        if (manualNameRef.current) manualNameRef.current.focus({ preventScroll: true });
         return;
       }
       if (quantity <= 0) {
@@ -272,7 +238,8 @@ function ProductSearchComponent({
             wholesale: unitPrice, 
             cost: unitCost,
             cost_price: unitCost
-          }
+          },
+          ...(manualProductImage ? { imageUrl: manualProductImage } : {}),
         };
 
         onAddProduct({
@@ -288,7 +255,7 @@ function ProductSearchComponent({
         setManualCost('');
         
         if (manualNameRef.current) {
-          manualNameRef.current.focus();
+          manualNameRef.current.focus({ preventScroll: true });
         }
         toast.success(`Manual item ${manualProduct.name} added to cart`);
       } finally {
@@ -375,7 +342,7 @@ function ProductSearchComponent({
       // Focus back to product search input
       setTimeout(() => {
         if (productSearchRef.current) {
-          productSearchRef.current.focus();
+          productSearchRef.current.focus({ preventScroll: true });
         }
       }, 100);
 
@@ -405,10 +372,13 @@ function ProductSearchComponent({
       if (isManualMode) {
         e.preventDefault();
         setIsManualMode(false);
+        setIsAddingProduct(false);
         setManualName('');
+        setManualCost('');
+        setManualProductImage(null);
         setQuantity(0);
         setCustomRate('');
-        setTimeout(() => productSearchRef.current?.focus(), 100);
+        setTimeout(() => productSearchRef.current?.focus({ preventScroll: true }), 100);
       } else if (isAddingProduct) {
         e.preventDefault();
         setSelectedProduct(null);
@@ -520,8 +490,8 @@ function ProductSearchComponent({
                       onSearch={setProductSearchTerm}
                       displayKey={productDisplayKey}
                       selectedItem={selectedProduct}
-                      loading={productsLoading || variantsLoading}
-                      emptyMessage={productSearchTerm.length > 0 ? "No products found" : "Start typing to search products..."}
+                      loading={productsLoading}
+                      emptyMessage={emptySearchMessage}
                       value={productSearchTerm}
                     />
                   </div>
@@ -541,7 +511,7 @@ function ProductSearchComponent({
                         setIsAddingProduct(true);
                         setSelectedProduct(null);
                         setCalculatedRate(0);
-                        setTimeout(() => manualNameRef.current?.focus(), 100);
+                        setTimeout(() => manualNameRef.current?.focus({ preventScroll: true }), 100);
                       }}
                       className="px-3 py-2 border border-blue-300 text-blue-600 bg-blue-50 rounded-md hover:bg-blue-100 transition-colors flex items-center justify-center flex-shrink-0 text-sm font-medium"
                       title="Add manual item"
@@ -551,27 +521,61 @@ function ProductSearchComponent({
                   )}
                 </>
               ) : (
-                <div className="flex-1 flex space-x-2">
-                  <Input
-                    ref={manualNameRef}
-                    placeholder="Enter manual product name..."
-                    value={manualName}
-                    onChange={(e) => setManualName(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    className="flex-1"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsManualMode(false);
-                      setIsAddingProduct(false);
-                      setManualName('');
-                      setTimeout(() => productSearchRef.current?.focus(), 100);
-                    }}
-                    className="px-3 py-2 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors text-xs"
-                  >
-                    Cancel
-                  </button>
+                <div className="flex min-w-0 flex-1 flex-col gap-2">
+                  <div className="flex space-x-2">
+                    <Input
+                      ref={manualNameRef}
+                      placeholder="Enter manual product name..."
+                      value={manualName}
+                      onChange={(e) => setManualName(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      className="min-w-0 flex-1"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsManualMode(false);
+                        setIsAddingProduct(false);
+                        setManualName('');
+                        setManualCost('');
+                        setManualProductImage(null);
+                        setTimeout(() => productSearchRef.current?.focus({ preventScroll: true }), 100);
+                      }}
+                      className="shrink-0 rounded-md border border-gray-300 px-3 py-2 text-xs hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={manualImageInputRef}
+                      type="file"
+                      accept="image/jpeg,image/jpg,image/png,image/webp,image/gif"
+                      className="sr-only"
+                      onChange={handleManualImageFile}
+                    />
+                    {manualProductImage ? (
+                      <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-md border border-gray-200">
+                        <img src={manualProductImage} alt="" className="h-full w-full object-cover" />
+                        <button
+                          type="button"
+                          className="absolute right-0.5 top-0.5 rounded-full bg-black/60 p-0.5 text-white hover:bg-black/80"
+                          onClick={() => setManualProductImage(null)}
+                          aria-label="Remove photo"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => manualImageInputRef.current?.click()}
+                      className="rounded-md border border-dashed border-gray-300 px-2.5 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                    >
+                      {manualProductImage ? 'Change photo' : 'Photo (optional)'}
+                    </button>
+                    <span className="text-[10px] text-gray-400">Max 5 MB</span>
+                  </div>
                 </div>
               )}
               {selectedProduct?.imageUrl && !isManualMode && showProductImages && (
@@ -622,9 +626,13 @@ function ProductSearchComponent({
               <label className="block text-xs font-medium text-gray-700 mb-1">
                 Amount
               </label>
-              <span className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-2 rounded border border-gray-200 block text-center h-10 flex items-center justify-center">
-                {isAddingProduct ? Math.round(quantity * parseInt(customRate || 0)) : 0}
-              </span>
+              <Input
+                type="text"
+                readOnly
+                value={isAddingProduct ? Math.round(quantity * parseInt(customRate || 0)) : 0}
+                onFocus={(e) => e.target.select()}
+                className="text-center h-10 bg-gray-100 font-semibold text-gray-700"
+              />
             </div>
 
             {/* Box + Qty (dual unit): no parent "Quantity" label — matches cart columns */}
@@ -653,6 +661,7 @@ function ProductSearchComponent({
                             const capped = allowOutOfStock ? raw : Math.min(raw, selectedStockPieces);
                             setQuantity(Math.max(1, capped || 0));
                           }}
+                          onFocus={(e) => e.target.select()}
                           onKeyDown={handleKeyDown}
                           className="text-center h-10"
                         />
@@ -670,6 +679,7 @@ function ProductSearchComponent({
                             const capped = allowOutOfStock ? raw : Math.min(raw, selectedStockPieces);
                             setQuantity(Math.max(1, capped || 0));
                           }}
+                          onFocus={(e) => e.target.select()}
                           onKeyDown={handleKeyDown}
                           className="text-center h-10"
                         />
@@ -697,6 +707,7 @@ function ProductSearchComponent({
                   min="1"
                   value={quantity || ''}
                   onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 0))}
+                  onFocus={(e) => e.target.select()}
                   onKeyDown={handleKeyDown}
                   className="text-center h-10"
                 />
@@ -790,8 +801,8 @@ function ProductSearchComponent({
                       onSearch={setProductSearchTerm}
                       displayKey={productDisplayKey}
                       selectedItem={selectedProduct}
-                      loading={productsLoading || variantsLoading}
-                      emptyMessage={productSearchTerm.length > 0 ? "No products found" : "Start typing to search products..."}
+                      loading={productsLoading}
+                      emptyMessage={emptySearchMessage}
                       value={productSearchTerm}
                     />
                   </div>
@@ -811,7 +822,7 @@ function ProductSearchComponent({
                         setIsAddingProduct(true);
                         setSelectedProduct(null);
                         setCalculatedRate(0);
-                        setTimeout(() => manualNameRef.current?.focus(), 100);
+                        setTimeout(() => manualNameRef.current?.focus({ preventScroll: true }), 100);
                       }}
                       className="px-3 py-2 border border-blue-300 text-blue-600 bg-blue-50 rounded-md hover:bg-blue-100 transition-colors flex items-center justify-center flex-shrink-0 text-sm font-medium"
                       title="Add manual item"
@@ -822,27 +833,61 @@ function ProductSearchComponent({
                   )}
                 </>
               ) : (
-                <div className="flex-1 flex space-x-2">
-                  <Input
-                    ref={manualNameRef}
-                    placeholder="Enter manual product name..."
-                    value={manualName}
-                    onChange={(e) => setManualName(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    className="flex-1"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsManualMode(false);
-                      setIsAddingProduct(false);
-                      setManualName('');
-                      setTimeout(() => productSearchRef.current?.focus(), 100);
-                    }}
-                    className="px-3 py-2 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors text-xs"
-                  >
-                    Cancel
-                  </button>
+                <div className="flex min-w-0 flex-1 flex-col gap-2">
+                  <div className="flex space-x-2">
+                    <Input
+                      ref={manualNameRef}
+                      placeholder="Enter manual product name..."
+                      value={manualName}
+                      onChange={(e) => setManualName(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      className="min-w-0 flex-1"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsManualMode(false);
+                        setIsAddingProduct(false);
+                        setManualName('');
+                        setManualCost('');
+                        setManualProductImage(null);
+                        setTimeout(() => productSearchRef.current?.focus({ preventScroll: true }), 100);
+                      }}
+                      className="shrink-0 rounded-md border border-gray-300 px-3 py-2 text-xs hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={manualImageInputRef}
+                      type="file"
+                      accept="image/jpeg,image/jpg,image/png,image/webp,image/gif"
+                      className="sr-only"
+                      onChange={handleManualImageFile}
+                    />
+                    {manualProductImage ? (
+                      <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-md border border-gray-200">
+                        <img src={manualProductImage} alt="" className="h-full w-full object-cover" />
+                        <button
+                          type="button"
+                          className="absolute right-0.5 top-0.5 rounded-full bg-black/60 p-0.5 text-white hover:bg-black/80"
+                          onClick={() => setManualProductImage(null)}
+                          aria-label="Remove photo"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => manualImageInputRef.current?.click()}
+                      className="rounded-md border border-dashed border-gray-300 px-2.5 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                    >
+                      {manualProductImage ? 'Change photo' : 'Photo (optional)'}
+                    </button>
+                    <span className="text-[10px] text-gray-400">Max 5 MB</span>
+                  </div>
                 </div>
               )}
               {selectedProduct?.imageUrl && !isManualMode && showProductImages && (
@@ -932,6 +977,7 @@ function ProductSearchComponent({
                           const capped = allowOutOfStock ? raw : Math.min(raw, selectedStockPieces);
                           setQuantity(Math.max(1, capped || 0));
                         }}
+                        onFocus={(e) => e.target.select()}
                         onKeyDown={handleKeyDown}
                         className="text-center h-10"
                       />
@@ -949,6 +995,7 @@ function ProductSearchComponent({
                           const capped = allowOutOfStock ? raw : Math.min(raw, selectedStockPieces);
                           setQuantity(Math.max(1, capped || 0));
                         }}
+                        onFocus={(e) => e.target.select()}
                         onKeyDown={handleKeyDown}
                         className="text-center h-10"
                       />
@@ -976,6 +1023,7 @@ function ProductSearchComponent({
                 min="1"
                 value={quantity || ''}
                 onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 0))}
+                onFocus={(e) => e.target.select()}
                 onKeyDown={handleKeyDown}
                 className="text-center h-10"
               />
@@ -1022,9 +1070,13 @@ function ProductSearchComponent({
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Amount
             </label>
-            <span className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-2 rounded border border-gray-200 block text-center h-10 flex items-center justify-center">
-              {isAddingProduct ? Math.round(quantity * parseInt(customRate || 0)) : 0}
-            </span>
+            <Input
+              type="text"
+              readOnly
+              value={isAddingProduct ? Math.round(quantity * parseInt(customRate || 0)) : 0}
+              onFocus={(e) => e.target.select()}
+              className="text-center h-10 bg-gray-100 font-semibold text-gray-700"
+            />
           </div>
 
           {/* Add Button - 1 column */}
